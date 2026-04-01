@@ -1,0 +1,7 @@
+venv/
+.env
+pycache/
+*.pyc
+output/
+data/
+APPLICATION_DETAILED_GUIDE.md
