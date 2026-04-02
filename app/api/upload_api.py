@@ -11,6 +11,7 @@ from werkzeug.exceptions import HTTPException
 
 from app.config.settings import settings
 from app.services.billing_service import process_billing_file
+from app.services.excel_filter_service import remove_red_rows_from_excel
 from app.services.mail_service import MicrosoftGraphMailboxClient
 
 logger = logging.getLogger(__name__)
@@ -163,3 +164,53 @@ def register_api_routes(app: Flask) -> None:
             return jsonify({"error": str(exc)}), 500
 
         return jsonify({"status": "sent", "to": to_addresses, "subject": subject}), 200
+
+    @app.post("/api/v1/excel/remove-red")
+    def remove_red_rows_api():
+        """Remove red-highlighted rows from an Excel file in data/ for testing.
+
+        Request JSON body::
+
+            {
+                "filename": "input.xlsx",
+                "output_dir": "data"  # optional
+            }
+        """
+        data = request.get_json(silent=True) or {}
+        filename = data.get("filename")
+
+        if not filename or not isinstance(filename, str):
+            return jsonify({"error": "'filename' is required and must be a string."}), 400
+
+        safe_name = os.path.basename(filename)
+        source_path = os.path.join(settings.upload_dir, safe_name)
+        if not os.path.isfile(source_path):
+            return jsonify({"error": f"File not found in data folder: {safe_name}"}), 404
+
+        ext = os.path.splitext(safe_name)[1].lower()
+        if ext not in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+            return jsonify({"error": "Only Excel files are supported (.xlsx, .xlsm, .xltx, .xltm)."}), 400
+
+        output_dir = data.get("output_dir")
+        if output_dir is not None and not isinstance(output_dir, str):
+            return jsonify({"error": "'output_dir' must be a string when provided."}), 400
+
+        try:
+            cleaned_path = remove_red_rows_from_excel(
+                input_file_path=source_path,
+                output_dir=output_dir or settings.upload_dir,
+            )
+        except Exception as exc:
+            logger.error("remove_red_rows_api failed: %s", exc)
+            return jsonify({"error": str(exc)}), 500
+
+        return (
+            jsonify(
+                {
+                    "status": "ok",
+                    "source_file": source_path,
+                    "cleaned_file": cleaned_path,
+                }
+            ),
+            200,
+        )
