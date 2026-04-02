@@ -11,6 +11,7 @@ from urllib.request import Request, urlopen
 
 logger = logging.getLogger(__name__)
 from app.services.base import EmailMessage, MailboxClient
+from app.services.excel_filter_service import remove_red_rows_from_excel
 
 
 
@@ -145,6 +146,20 @@ class MicrosoftGraphMailboxClient(MailboxClient):
             target_path = self._next_available_path(attachment_dir / safe_name)
             target_path.write_bytes(b64decode(content_b64))
             saved_paths.append(str(target_path))
+
+            # If attachment is an Excel file, create a cleaned copy without red rows.
+            if target_path.suffix.lower() in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+                try:
+                    cleaned_path = remove_red_rows_from_excel(
+                        input_file_path=str(target_path),
+                    )
+                    saved_paths.append(cleaned_path)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to create cleaned Excel file for %s: %s",
+                        target_path,
+                        exc,
+                    )
 
         return saved_paths
 
