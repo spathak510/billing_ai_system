@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>{{subject}}</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #f4f4f4;
+      margin: 0;
+      padding: 0;
+    }
+    .container {
+      max-width: 620px;
+      margin: 40px auto;
+      background-color: #ffffff;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    .header {
+      background-color: #0078d4;
+      color: #ffffff;
+      padding: 24px 32px;
+    }
+    .header h1 {
+      margin: 0;
+      font-size: 22px;
+    }
+    .body {
+      padding: 32px;
+      color: #333333;
+      line-height: 1.7;
+    }
+    .body p {
+      margin: 0 0 16px;
+    }
+    .message-box {
+      background-color: #f0f7ff;
+      border-left: 4px solid #0078d4;
+      padding: 16px 20px;
+      border-radius: 4px;
+      margin-bottom: 24px;
+      color: #333333;
+    }
+    .footer {
+      background-color: #f4f4f4;
+      padding: 16px 32px;
+      font-size: 12px;
+      color: #888888;
+      text-align: center;
+      border-top: 1px solid #e0e0e0;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>{{subject}}</h1>
+    </div>
+    <div class="body">
+      <p>Dear {{recipient_name}},</p>
+      <div class="message-box">
+        {{message}}
+      </div>
+      <p>If you have any questions, please don't hesitate to reach out.</p>
+      <p>Best regards,<br><strong>Billing System</strong></p>
+    </div>
+    <div class="footer">
+      &copy; 2026 Billing AI System &bull; This is an automated message, please do not reply directly.
+    </div>
+  </div>
+</body>
+</html>
