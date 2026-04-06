@@ -12,6 +12,7 @@ from werkzeug.exceptions import HTTPException
 from app.config.settings import settings
 from app.services.billing_service import process_billing_file
 from app.services.excel_filter_service import remove_red_rows_from_excel
+from app.services.peoplesoft_output_service import generate_amer_peoplesoft_output
 from app.services.mail_service import MicrosoftGraphMailboxClient
 
 logger = logging.getLogger(__name__)
@@ -210,6 +211,66 @@ def register_api_routes(app: Flask) -> None:
                     "status": "ok",
                     "source_file": source_path,
                     "cleaned_file": cleaned_path,
+                }
+            ),
+            200,
+        )
+
+    @app.post("/api/v1/excel/amer-peoplesoft")
+    def generate_amer_peoplesoft_api():
+        """Generate PeopleSoft format CSV output for AMER data.
+
+        Request JSON body::
+
+            {
+                "input_file_path": "C:/.../output/AMER_*.xlsx",  # optional absolute path
+                "filename": "AMER_sample.xlsx",  # optional file in output folder
+                "output_stem": "AMER_2026.02 Global Non-Corp February 2026 - Learning Updated 2026.02.18"  # optional
+            }
+        """
+        data = request.get_json(silent=True) or {}
+        filename = data.get("filename")
+        input_file_path = data.get("input_file_path")
+        output_stem = data.get("output_stem")
+
+        if filename is not None and not isinstance(filename, str):
+            return jsonify({"error": "'filename' must be a string when provided."}), 400
+        if input_file_path is not None and not isinstance(input_file_path, str):
+            return jsonify({"error": "'input_file_path' must be a string when provided."}), 400
+        if output_stem is not None and not isinstance(output_stem, str):
+            return jsonify({"error": "'output_stem' must be a string when provided."}), 400
+
+        source_path = input_file_path
+        if not source_path and filename:
+            safe_name = os.path.basename(filename)
+            source_path = os.path.join(settings.output_dir, safe_name)
+
+        if source_path and not os.path.isfile(source_path):
+            return jsonify({"error": f"File not found: {source_path}"}), 404
+
+        if source_path:
+            ext = os.path.splitext(source_path)[1].lower()
+        else:
+            ext = ".xlsx"
+
+        if ext not in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+            return jsonify({"error": "Only Excel files are supported (.xlsx, .xlsm, .xltx, .xltm)."}), 400
+
+        try:
+            result = generate_amer_peoplesoft_output(
+                input_file_path=source_path,
+                output_stem=output_stem,
+            )
+        except Exception as exc:
+            logger.error("generate_amer_peoplesoft_api failed: %s", exc)
+            return jsonify({"error": str(exc)}), 500
+
+        return (
+            jsonify(
+                {
+                    "status": "ok",
+                    "source_file": source_path,
+                    **result,
                 }
             ),
             200,
