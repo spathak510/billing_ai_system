@@ -10,21 +10,85 @@ from flask import Flask, jsonify, request, send_file
 from werkzeug.exceptions import HTTPException
 
 from app.config.settings import settings
+from app.agents.mail_reader_agent import MailReaderAgent
 from app.services.billing_service import process_billing_file
 from app.services.excel_filter_service import remove_red_rows_from_excel
 from app.services.peoplesoft_output_service import generate_amer_peoplesoft_output
-from app.services.mail_service import MicrosoftGraphMailboxClient
 
 logger = logging.getLogger(__name__)
 
-pipeline = MicrosoftGraphMailboxClient(
-    tenant_id=os.getenv("GRAPH_TENANT_ID"),
-    client_id=os.getenv("GRAPH_CLIENT_ID"),
-    client_secret=os.getenv("GRAPH_CLIENT_SECRET"),
-    mailbox_user=os.getenv("GRAPH_MAILBOX_USER"),
-    mailbox_password=os.getenv("GRAPH_MAILBOX_PASSWORD"),
-    timeout_seconds=int(os.getenv("GRAPH_TIMEOUT_SECONDS", "20")),
-)
+mail_agent = MailReaderAgent()
+ALLOWED_EXCEL_ATTACHMENT_EXTENSIONS = {".xlsx", ".xlsm"}
+ALLOWED_EMAIL_BODY_TYPES = {"text", "html"}
+
+
+def _normalize_email_addresses(value, field_name: str, *, required: bool = False) -> list[str] | None:
+    if value in (None, "", []):
+        if required:
+            raise ValueError(f"'{field_name}' must be a non-empty email address or list of email addresses.")
+        return None
+
+    if isinstance(value, str):
+        normalized = [value.strip()] if value.strip() else []
+    elif isinstance(value, list):
+        normalized = []
+        for idx, item in enumerate(value):
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError(
+                    f"'{field_name}' item at index {idx} must be a non-empty email address string."
+                )
+            normalized.append(item.strip())
+    else:
+        raise ValueError(f"'{field_name}' must be an email address string or a list of email addresses.")
+
+    if required and not normalized:
+        raise ValueError(f"'{field_name}' must be a non-empty email address or list of email addresses.")
+    return normalized or None
+
+
+def _normalize_email_attachments(raw_attachments) -> list[dict] | None:
+    if raw_attachments in (None, []):
+        return None
+    if not isinstance(raw_attachments, list):
+        raise ValueError("'attachments' must be a list when provided.")
+
+    normalized_attachments: list[dict] = []
+    for idx, att in enumerate(raw_attachments):
+        if isinstance(att, str):
+            path = att.strip()
+            name = os.path.basename(path)
+        elif isinstance(att, dict):
+            path = att.get("path")
+            name = att.get("name")
+            if name is None and isinstance(path, str):
+                name = os.path.basename(path)
+        else:
+            raise ValueError(f"Attachment at index {idx} must be a path string or an object.")
+
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError(f"Attachment at index {idx} is missing a valid 'path'.")
+        if not os.path.isfile(path):
+            raise ValueError(f"Attachment file not found: {path}")
+
+        actual_name = os.path.basename(path)
+        actual_ext = os.path.splitext(actual_name)[1].lower()
+        if actual_ext not in ALLOWED_EXCEL_ATTACHMENT_EXTENSIONS:
+            raise ValueError("Only Excel read/write attachment files are supported (.xlsx, .xlsm).")
+
+        if name is None:
+            name = actual_name
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"Attachment at index {idx} is missing a valid 'name'.")
+
+        provided_ext = os.path.splitext(name)[1].lower()
+        if provided_ext != actual_ext:
+            raise ValueError(
+                f"Attachment at index {idx} must use the exact file extension {actual_ext}."
+            )
+
+        normalized_attachments.append({"name": name, "path": path})
+
+    return normalized_attachments
 
 
 def register_api_routes(app: Flask) -> None:
@@ -92,9 +156,8 @@ def register_api_routes(app: Flask) -> None:
     @app.get("/api/v1/emails")
     def list_emails():
         """Return unread emails from the mailbox (or local fallback)."""
-        print("hello")
         limit = request.args.get("limit", 25, type=int)
-        emails = pipeline.fetch_unread(limit=limit)
+        emails = mail_agent.fetch_unread(limit=limit)
         return jsonify(
             [
                 {
@@ -111,54 +174,112 @@ def register_api_routes(app: Flask) -> None:
 
     @app.post("/api/v1/send-email")
     def send_email():
-        """Send an email using the static HTML template at app/templates/email_body.html.
+        """Send an email with dynamic recipients, sender, subject, body, and attachments.
 
         Request JSON body::
 
             {
+                "from": "shared.mailbox@company.com",
                 "to": ["recipient@example.com"],
-                "subject": "Invoice INV-3021 Due",
-                "recipient_name": "John",
-                "message": "Your invoice INV-3021 of $1,500 is due by April 15.",
                 "cc": ["cc@example.com"],
+                "subject": "Monthly Billing Validation",
+                "body": "Hi Team, Please validate the attached files.",
+                "body_type": "text",
                 "attachments": [
-                    {"name": "invoice.pdf", "path": "/absolute/path/to/file.pdf"}
+                    "/absolute/path/to/Monthly Billing Records (April 2026).xlsx",
+                    {
+                        "name": "Validated Monthly Records.xlsx",
+                        "path": "/absolute/path/to/Monthly Billing Records (April 2026).xlsx"
+                    }
                 ]
             }
+
+        HTML body example::
+
+            {
+                "to": "recipient@example.com",
+                "subject": "Validation Summary",
+                "body": "<p>Hello Team,</p><p>Please review the attached workbook.</p>",
+                "body_type": "html"
+            }
+
+        Template body example::
+
+            {
+                "to": ["recipient@example.com"],
+                "subject": "Monthly Billing Validation",
+                "template_name": "Monthly_report_validation.html",
+                "template_variables": {
+                    "recipient_name": "Team",
+                    "message": "Please prioritize AMER validation first."
+                }
+            }
+
+        Attachment rules:
+        - Each attachment can be either a file path string or an object with 'path' and optional 'name'.
+        - If 'name' is omitted, the file name from 'path' is used automatically.
+        - If 'name' is provided, it can differ from the source file name but must keep the same extension.
+        - Only Excel read/write files are allowed: .xlsx, .xlsm.
+
+        Body rules:
+        - Use 'body' with 'body_type' set to 'text' or 'html'.
+        - Or use 'template_name' with optional 'template_variables' for HTML template rendering.
+        - If neither is supplied, the default template Monthly_report_validation.html is used.
         """
         data = request.get_json(silent=True) or {}
 
-        to_addresses = data.get("to")
         subject = data.get("subject")
-
-        if not to_addresses or not isinstance(to_addresses, list):
-            return jsonify({"error": "'to' must be a non-empty list of email addresses."}), 400
         if not subject or not isinstance(subject, str):
             return jsonify({"error": "'subject' is required."}), 400
 
+        try:
+            to_addresses = _normalize_email_addresses(data.get("to"), "to", required=True)
+            cc_addresses = _normalize_email_addresses(data.get("cc"), "cc")
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        from_address = data.get("from")
+        if from_address is not None and (not isinstance(from_address, str) or not from_address.strip()):
+            return jsonify({"error": "'from' must be a non-empty email address when provided."}), 400
+        if isinstance(from_address, str):
+            from_address = from_address.strip()
+
         recipient_name = data.get("recipient_name") or "Team"
         message = data.get("message") or ""
+        body = data.get("body")
+        body_type = (data.get("body_type") or "text").lower()
+        template_name = data.get("template_name")
+        template_variables = data.get("template_variables") or {}
 
-        template_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), "templates", "email_body.html"
-        )
-        with open(template_path, encoding="utf-8") as f:
-            html_body = f.read()
-
-        html_body = (
-            html_body
-            .replace("{{subject}}", subject)
-            .replace("{{recipient_name}}", recipient_name)
-            .replace("{{message}}", message)
-        )
+        if body is not None and not isinstance(body, str):
+            return jsonify({"error": "'body' must be a string when provided."}), 400
+        if body_type not in ALLOWED_EMAIL_BODY_TYPES:
+            return jsonify({"error": "'body_type' must be either 'text' or 'html'."}), 400
+        if template_name is not None and not isinstance(template_name, str):
+            return jsonify({"error": "'template_name' must be a string when provided."}), 400
+        if not isinstance(template_variables, dict):
+            return jsonify({"error": "'template_variables' must be an object when provided."}), 400
+        if body and template_name:
+            return jsonify({"error": "Provide either 'body' or 'template_name', not both."}), 400
 
         try:
-            pipeline.send_email(
+            attachments = _normalize_email_attachments(data.get("attachments"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        try:
+            mail_agent.send_email(
                 to_addresses=to_addresses,
                 subject=subject,
-                body=html_body,
-                cc_addresses=data.get("cc") or None,
-                attachments=data.get("attachments") or None,
+                body=body,
+                body_type=body_type,
+                template_name=template_name,
+                template_variables=template_variables,
+                from_address=from_address,
+                recipient_name=recipient_name,
+                message=message,
+                cc_addresses=cc_addresses,
+                attachments=attachments,
             )
         except Exception as exc:
             logger.error("send_email failed: %s", exc)
@@ -275,3 +396,4 @@ def register_api_routes(app: Flask) -> None:
             ),
             200,
         )
+
