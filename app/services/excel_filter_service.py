@@ -6,8 +6,12 @@ from pathlib import Path
 from openpyxl import Workbook, load_workbook
 
 from app.config.settings import settings
-from app.services.apac_processing_service import generate_apac_processing_output
+from app.services.apac_processing_service import generate_apac_processing_output, generate_rir_files_from_apac_output
+from app.services.amer_intercompany_service import generate_amer_intercompany_output
 from app.services.emeaa_processing_service import generate_emeaa_processing_output
+from app.services.gaf_apac_processor_service import generate_gaf_apac_output
+from app.services.rir_apac_processor_service import generate_rir_apac_output
+from app.services.jrf_processor_service import generate_jrf_output
 from app.services.peoplesoft_output_service import generate_amer_peoplesoft_output
 
 logger = logging.getLogger(__name__)
@@ -275,6 +279,11 @@ def remove_red_rows_from_excel(
         logger.warning("Failed AMER PeopleSoft generation for cleaned file %s: %s", output_path, exc)
 
     try:
+        generate_amer_intercompany_output(input_file_path=str(output_path))
+    except Exception as exc:
+        logger.warning("Failed AMER Intercompany generation for cleaned file %s: %s", output_path, exc)
+
+    try:
         generate_apac_processing_output(input_file_path=str(output_path))
     except Exception as exc:
         logger.warning("Failed APAC processing generation for cleaned file %s: %s", output_path, exc)
@@ -283,6 +292,26 @@ def remove_red_rows_from_excel(
         generate_emeaa_processing_output(input_file_path=str(output_path))
     except Exception as exc:
         logger.warning("Failed EMEAA processing generation for cleaned file %s: %s", output_path, exc)
+
+    try:
+        generate_rir_files_from_apac_output()
+    except Exception as exc:
+        logger.warning("Failed RIR file generation from APAC output for cleaned file %s: %s", output_path, exc)
+
+    try:
+        generate_gaf_apac_output(input_file_path=str(output_path))
+    except Exception as exc:
+        logger.warning("Failed GAF APAC generation for cleaned file %s: %s", output_path, exc)
+
+    try:
+        generate_rir_apac_output(input_file_path=str(output_path))
+    except Exception as exc:
+        logger.warning("Failed RIR APAC generation for cleaned file %s: %s", output_path, exc)
+
+    try:
+        generate_jrf_output(input_file_path=str(output_path))
+    except Exception as exc:
+        logger.warning("Failed JRF generation for cleaned file %s: %s", output_path, exc)
 
     logger.info("Created cleaned Excel file without red rows: %s", output_path)
     return str(output_path)

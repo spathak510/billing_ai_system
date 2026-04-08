@@ -10,21 +10,14 @@ from flask import Flask, jsonify, request, send_file
 from werkzeug.exceptions import HTTPException
 
 from app.config.settings import settings
+from app.agents.mail_reader_agent import MailReaderAgent
 from app.services.billing_service import process_billing_file
 from app.services.excel_filter_service import remove_red_rows_from_excel
 from app.services.peoplesoft_output_service import generate_amer_peoplesoft_output
-from app.services.mail_service import MicrosoftGraphMailboxClient
 
 logger = logging.getLogger(__name__)
 
-pipeline = MicrosoftGraphMailboxClient(
-    tenant_id=os.getenv("GRAPH_TENANT_ID"),
-    client_id=os.getenv("GRAPH_CLIENT_ID"),
-    client_secret=os.getenv("GRAPH_CLIENT_SECRET"),
-    mailbox_user=os.getenv("GRAPH_MAILBOX_USER"),
-    mailbox_password=os.getenv("GRAPH_MAILBOX_PASSWORD"),
-    timeout_seconds=int(os.getenv("GRAPH_TIMEOUT_SECONDS", "20")),
-)
+mail_agent = MailReaderAgent()
 
 
 def register_api_routes(app: Flask) -> None:
@@ -92,9 +85,8 @@ def register_api_routes(app: Flask) -> None:
     @app.get("/api/v1/emails")
     def list_emails():
         """Return unread emails from the mailbox (or local fallback)."""
-        print("hello")
         limit = request.args.get("limit", 25, type=int)
-        emails = pipeline.fetch_unread(limit=limit)
+        emails = mail_agent.fetch_unread(limit=limit)
         return jsonify(
             [
                 {
@@ -139,24 +131,12 @@ def register_api_routes(app: Flask) -> None:
         recipient_name = data.get("recipient_name") or "Team"
         message = data.get("message") or ""
 
-        template_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), "templates", "email_body.html"
-        )
-        with open(template_path, encoding="utf-8") as f:
-            html_body = f.read()
-
-        html_body = (
-            html_body
-            .replace("{{subject}}", subject)
-            .replace("{{recipient_name}}", recipient_name)
-            .replace("{{message}}", message)
-        )
-
         try:
-            pipeline.send_email(
+            mail_agent.send_email(
                 to_addresses=to_addresses,
                 subject=subject,
-                body=html_body,
+                recipient_name=recipient_name,
+                message=message,
                 cc_addresses=data.get("cc") or None,
                 attachments=data.get("attachments") or None,
             )
@@ -275,3 +255,4 @@ def register_api_routes(app: Flask) -> None:
             ),
             200,
         )
+
