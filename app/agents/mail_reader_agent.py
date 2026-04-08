@@ -26,23 +26,46 @@ class MailReaderAgent:
 		self,
 		to_addresses: list[str],
 		subject: str,
+		body: str | None = None,
+		body_type: str = "text",
+		template_name: str | None = None,
+		template_variables: dict | None = None,
+		from_address: str | None = None,
 		recipient_name: str = "Team",
 		message: str = "",
 		cc_addresses: list[str] | None = None,
 		attachments: list[dict] | None = None,
 	) -> None:
-		template_path = Path(__file__).resolve().parents[1] / "templates" / "email_body.html"
-		html_body = template_path.read_text(encoding="utf-8")
-		html_body = (
-			html_body.replace("{{subject}}", subject)
-			.replace("{{recipient_name}}", recipient_name)
-			.replace("{{message}}", message)
-		)
+		rendered_body = body or ""
+		rendered_body_type = body_type.upper()
+
+		selected_template = template_name
+		if not rendered_body and not selected_template:
+			selected_template = "Monthly_report_validation.html"
+
+		if selected_template:
+			template_path = Path(__file__).resolve().parents[1] / "templates" / selected_template
+			html_body = template_path.read_text(encoding="utf-8")
+			merged_variables = {
+				"subject": subject,
+				"recipient_name": recipient_name,
+				"message": message,
+			}
+			if template_variables:
+				merged_variables.update({key: str(value) for key, value in template_variables.items()})
+
+			for key, value in merged_variables.items():
+				html_body = html_body.replace(f"{{{{{key}}}}}", value)
+
+			rendered_body = html_body
+			rendered_body_type = "HTML"
 
 		self._client.send_email(
 			to_addresses=to_addresses,
 			subject=subject,
-			body=html_body,
+			body=rendered_body,
+			body_content_type=rendered_body_type,
+			from_address=from_address,
 			cc_addresses=cc_addresses,
 			attachments=attachments,
 		)
