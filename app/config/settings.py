@@ -23,6 +23,18 @@ class Settings(BaseSettings):
     anomaly_threshold: float = 0.85
     enable_ai_validation: bool = True
 
+    # SharePoint configuration
+    sharepoint_tenant_id: str = ""
+    sharepoint_client_id: str = ""
+    sharepoint_client_secret: str = ""
+    sharepoint_username: str = ""
+    sharepoint_password: str = ""
+    sharepoint_site_url: str = ""
+    sharepoint_site_id: str = ""
+    sharepoint_library_name: str = "Documents"
+    sharepoint_download_root_path: str = "Documents/LMS Billing/Monthly Billing"
+    sharepoint_timeout_seconds: int = 30
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

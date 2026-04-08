@@ -14,10 +14,31 @@ from app.agents.mail_reader_agent import MailReaderAgent
 from app.services.billing_service import process_billing_file
 from app.services.excel_filter_service import remove_red_rows_from_excel
 from app.services.peoplesoft_output_service import generate_amer_peoplesoft_output
+from app.services.sharepoint_download_service import SharePointDownloadClient
+from app.services.sharepoint_upload_service import SharePointUploadClient
 
 logger = logging.getLogger(__name__)
 
 mail_agent = MailReaderAgent()
+
+# Lazy-initialized SharePoint clients to avoid 401 errors at module import time
+_sharepoint_download_client: SharePointDownloadClient | None = None
+_sharepoint_upload_client: SharePointUploadClient | None = None
+
+def _get_sharepoint_download_client() -> SharePointDownloadClient:
+    """Get or create SharePoint download client (lazy initialization)."""
+    global _sharepoint_download_client
+    if _sharepoint_download_client is None:
+        _sharepoint_download_client = SharePointDownloadClient()
+    return _sharepoint_download_client
+
+def _get_sharepoint_upload_client() -> SharePointUploadClient:
+    """Get or create SharePoint upload client (lazy initialization)."""
+    global _sharepoint_upload_client
+    if _sharepoint_upload_client is None:
+        _sharepoint_upload_client = SharePointUploadClient()
+    return _sharepoint_upload_client
+
 ALLOWED_EXCEL_ATTACHMENT_EXTENSIONS = {".xlsx", ".xlsm"}
 ALLOWED_EMAIL_BODY_TYPES = {"text", "html"}
 
@@ -226,7 +247,7 @@ def register_api_routes(app: Flask) -> None:
         - Or use 'template_name' with optional 'template_variables' for HTML template rendering.
         - If neither is supplied, the default template Monthly_report_validation.html is used.
         """
-        data = request.get_json(silent=True) or {}
+        data = request.get_json(force=True, silent=True) or {}
 
         subject = data.get("subject")
         if not subject or not isinstance(subject, str):
@@ -298,7 +319,7 @@ def register_api_routes(app: Flask) -> None:
                 "output_dir": "data"  # optional
             }
         """
-        data = request.get_json(silent=True) or {}
+        data = request.get_json(force=True, silent=True) or {}
         filename = data.get("filename")
 
         if not filename or not isinstance(filename, str):
@@ -349,7 +370,7 @@ def register_api_routes(app: Flask) -> None:
                 "output_stem": "AMER_2026.02 Global Non-Corp February 2026 - Learning Updated 2026.02.18"  # optional
             }
         """
-        data = request.get_json(silent=True) or {}
+        data = request.get_json(force=True, silent=True) or {}
         filename = data.get("filename")
         input_file_path = data.get("input_file_path")
         output_stem = data.get("output_stem")
@@ -392,6 +413,97 @@ def register_api_routes(app: Flask) -> None:
                     "status": "ok",
                     "source_file": source_path,
                     **result,
+                }
+            ),
+            200,
+        )
+
+    @app.post("/api/v1/sharepoint/download")
+    def sharepoint_download_api():
+        """Download all files from the configured SharePoint folder to local data storage.
+
+        No request body is required. Files are downloaded from the configured
+        SharePoint folder into the local data directory.
+        """
+        remote_path = settings.sharepoint_download_root_path.rstrip("/")
+        local_dir = settings.upload_dir
+
+        try:
+            downloaded_files = _get_sharepoint_download_client().download_all_files(remote_path, local_dir)
+        except Exception as exc:
+            logger.error("sharepoint_download_api failed: %s", exc)
+            return jsonify({"error": str(exc)}), 500
+
+        return (
+            jsonify(
+                {
+                    "status": "ok",
+                    "remote_path": remote_path,
+                    "local_directory": os.path.abspath(local_dir),
+                    "downloaded_files": [os.path.abspath(path) for path in downloaded_files],
+                    "downloaded_count": len(downloaded_files),
+                }
+            ),
+            200,
+        )
+
+    @app.post("/api/v1/sharepoint/upload")
+    def sharepoint_upload_api():
+        """Upload a local file to SharePoint.
+
+        Request JSON body::
+
+            {
+                "remote_path": "reports/2026/output.xlsx",
+                "local_file_path": "output/output.xlsx",  # optional
+                "filename": "output.xlsx",                # optional alternative
+                "overwrite": true                           # optional
+            }
+        """
+        data = request.get_json(force=True, silent=True) or {}
+        remote_path = data.get("remote_path")
+        local_file_path = data.get("local_file_path")
+        filename = data.get("filename")
+        overwrite = data.get("overwrite", True)
+
+        if not remote_path or not isinstance(remote_path, str):
+            return jsonify({"error": "'remote_path' is required and must be a string."}), 400
+        if local_file_path is not None and not isinstance(local_file_path, str):
+            return jsonify({"error": "'local_file_path' must be a string when provided."}), 400
+        if filename is not None and not isinstance(filename, str):
+            return jsonify({"error": "'filename' must be a string when provided."}), 400
+        if not isinstance(overwrite, bool):
+            return jsonify({"error": "'overwrite' must be a boolean when provided."}), 400
+
+        remote_path = remote_path.strip().lstrip("/")
+        if not remote_path:
+            return jsonify({"error": "'remote_path' cannot be empty."}), 400
+
+        source_path = local_file_path
+        if not source_path and filename:
+            safe_name = os.path.basename(filename)
+            output_candidate = os.path.join(settings.output_dir, safe_name)
+            upload_candidate = os.path.join(settings.upload_dir, safe_name)
+            source_path = output_candidate if os.path.isfile(output_candidate) else upload_candidate
+
+        if not source_path:
+            return jsonify({"error": "Provide either 'local_file_path' or 'filename'."}), 400
+        if not os.path.isfile(source_path):
+            return jsonify({"error": f"Local file not found: {source_path}"}), 404
+
+        try:
+            result = _get_sharepoint_upload_client().upload_file(source_path, remote_path, overwrite=overwrite)
+        except Exception as exc:
+            logger.error("sharepoint_upload_api failed: %s", exc)
+            return jsonify({"error": str(exc)}), 500
+
+        return (
+            jsonify(
+                {
+                    "status": "ok",
+                    "local_file": os.path.abspath(source_path),
+                    "remote_path": remote_path,
+                    "sharepoint_result": result,
                 }
             ),
             200,
