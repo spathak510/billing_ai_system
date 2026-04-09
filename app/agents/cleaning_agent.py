@@ -3,6 +3,8 @@ from __future__ import annotations
 
 
 from typing import Iterable, Optional
+from pathlib import Path
+from pathlib import Path
 
 import logging
 import re
@@ -306,12 +308,30 @@ class SampleBillingComparisonAgent:
 
         return region, user_type
 
+    def _resolve_output_path(self, output_path: str) -> str:
+        normalized = str(output_path).strip()
+        if not normalized:
+            raise ValueError("output_path cannot be empty.")
+
+        # Allow callers to pass either a full file path or a target folder.
+        extension = os.path.splitext(normalized)[1].lower()
+        if os.path.isdir(normalized) or extension == "":
+            os.makedirs(normalized, exist_ok=True)
+            return os.path.join(normalized, "sample_billing_comparison.xlsx")
+
+        output_dir = os.path.dirname(normalized)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        return normalized
+
     def run(
         self,
         sample_billing_path: str,
         comparison_file_paths: list[str],
         output_path: str,
     ) -> str:
+        resolved_output_path = self._resolve_output_path(output_path)
+
         if not os.path.exists(sample_billing_path):
             raise FileNotFoundError(f"Sample billing file not found: {sample_billing_path}")
 
@@ -399,10 +419,6 @@ class SampleBillingComparisonAgent:
             if not df.empty and "_parsed_amount" in df.columns:
                 df.drop(columns=["_parsed_amount"], inplace=True, errors="ignore")
 
-        output_dir = os.path.dirname(output_path)
-        if output_dir:
-            os.makedirs(output_dir, exist_ok=True)
-
         summary_df = pd.DataFrame(
             [
                 {"Metric": "Total rows in sample billing", "Value": len(sample_df)},
@@ -414,11 +430,34 @@ class SampleBillingComparisonAgent:
             ]
         )
 
-        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        with pd.ExcelWriter(resolved_output_path, engine="openpyxl") as writer:
             summary_df.to_excel(writer, sheet_name="Summary", index=False)
             zero_df.to_excel(writer, sheet_name="Zero_Data", index=False)
             non_zero_df.to_excel(writer, sheet_name="Non_Zero_Data", index=False)
             filtered_non_zero_df.to_excel(writer, sheet_name="Filtered_Non_Zero_Data", index=False)
             removed_matched_df.to_excel(writer, sheet_name="Removed_Matched_Rows", index=False)
 
-        return output_path
+        return resolved_output_path
+
+
+
+
+def cleaning_data_prosessing():
+    corp_dir = Path("data/History_data/Corp")
+    noncorp_dir = Path("data/History_data/NonCorp")
+
+    comparison_file_paths = [
+        str(p) for p in list(corp_dir.glob("*.xlsx")) + list(corp_dir.glob("*.csv"))
+    ]
+    comparison_file_paths += [
+        str(p) for p in list(noncorp_dir.glob("*.xlsx")) + list(noncorp_dir.glob("*.csv"))
+    ]
+
+    agent = SampleBillingComparisonAgent()
+    result = agent.run(
+        sample_billing_path="data/sample_billing.csv",
+        comparison_file_paths=comparison_file_paths,
+        output_path="output/Monthly_cleaned_report",
+    )
+    return True
+    
