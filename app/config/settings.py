@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     sharepoint_site_url: str = ""
     sharepoint_site_id: str = ""
     sharepoint_library_name: str = "Documents"
-    sharepoint_download_root_path: str = "Documents/LMS Billing/Monthly Billing"
+    sharepoint_download_root_path: str = "Documents/LMS Billing"
     sharepoint_timeout_seconds: int = 30
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
