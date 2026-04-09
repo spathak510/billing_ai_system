@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 import logging
 import os
 
@@ -15,6 +16,7 @@ from app.services.billing_service import process_billing_file
 from app.services.excel_filter_service import remove_red_rows_from_excel
 from app.services.peoplesoft_output_service import generate_amer_peoplesoft_output
 from app.services.sharepoint_download_service import SharePointDownloadClient
+from app.services.sharepoint_move_service import SharePointMoveClient
 from app.services.sharepoint_upload_service import SharePointUploadClient
 
 logger = logging.getLogger(__name__)
@@ -24,6 +26,7 @@ mail_agent = MailReaderAgent()
 # Lazy-initialized SharePoint clients to avoid 401 errors at module import time
 _sharepoint_download_client: SharePointDownloadClient | None = None
 _sharepoint_upload_client: SharePointUploadClient | None = None
+_sharepoint_move_client: SharePointMoveClient | None = None
 
 def _get_sharepoint_download_client() -> SharePointDownloadClient:
     """Get or create SharePoint download client (lazy initialization)."""
@@ -38,6 +41,13 @@ def _get_sharepoint_upload_client() -> SharePointUploadClient:
     if _sharepoint_upload_client is None:
         _sharepoint_upload_client = SharePointUploadClient()
     return _sharepoint_upload_client
+
+def _get_sharepoint_move_client() -> SharePointMoveClient:
+    """Get or create SharePoint move client (lazy initialization)."""
+    global _sharepoint_move_client
+    if _sharepoint_move_client is None:
+        _sharepoint_move_client = SharePointMoveClient()
+    return _sharepoint_move_client
 
 ALLOWED_EXCEL_ATTACHMENT_EXTENSIONS = {".xlsx", ".xlsm"}
 ALLOWED_EMAIL_BODY_TYPES = {"text", "html"}
@@ -503,6 +513,65 @@ def register_api_routes(app: Flask) -> None:
                     "status": "ok",
                     "local_file": os.path.abspath(source_path),
                     "remote_path": remote_path,
+                    "sharepoint_result": result,
+                }
+            ),
+            200,
+        )
+
+    @app.post("/api/v1/sharepoint/move")
+    def sharepoint_move_api():
+        """Move a file within SharePoint.
+
+        Request JSON body::
+
+            {
+                "source_path": "LMS Billing/Monthly Billing/source.csv",
+                "destination_path": "LMS Billing/Monthly Billing/Archive",
+                "overwrite": true
+            }
+
+        Behavior:
+        - Keeps original source filename (no rename).
+        - Creates a MonthYYYY folder under destination_path (for example April2026).
+        - Moves source file into destination_path/MonthYYYY/.
+        """
+        data = request.get_json(force=True, silent=True) or {}
+        source_path = data.get("source_path")
+        destination_path = data.get("destination_path")
+        overwrite = data.get("overwrite", True)
+
+        if not source_path or not isinstance(source_path, str):
+            return jsonify({"error": "'source_path' is required and must be a string."}), 400
+        if not destination_path or not isinstance(destination_path, str):
+            return jsonify({"error": "'destination_path' is required and must be a string."}), 400
+        if not isinstance(overwrite, bool):
+            return jsonify({"error": "'overwrite' must be a boolean when provided."}), 400
+
+        source_path = source_path.strip().lstrip("/")
+        destination_path = destination_path.strip().lstrip("/")
+        if not source_path:
+            return jsonify({"error": "'source_path' cannot be empty."}), 400
+        if not destination_path:
+            return jsonify({"error": "'destination_path' cannot be empty."}), 400
+
+        try:
+            result = _get_sharepoint_move_client().move_file(
+                source_path=source_path,
+                destination_path=destination_path,
+                overwrite=overwrite,
+            )
+        except Exception as exc:
+            logger.error("sharepoint_move_api failed: %s", exc)
+            return jsonify({"error": str(exc)}), 500
+
+        return (
+            jsonify(
+                {
+                    "status": "ok",
+                    "source_path": source_path,
+                    "destination_path": destination_path,
+                    "destination_month_folder": datetime.now().strftime("%B%Y"),
                     "sharepoint_result": result,
                 }
             ),

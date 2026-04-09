@@ -4,10 +4,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import socket
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
@@ -80,6 +81,16 @@ class SharePointUploadClient:
         """Encode a SharePoint path for Graph URLs while preserving path separators."""
         return quote(path.strip("/"), safe="/")
 
+    def _normalize_library_path(self, path: str) -> str:
+        """Normalize a SharePoint path relative to the configured document library."""
+        normalized = path.strip().lstrip("/").replace("\\", "/")
+        library_prefix = f"{self._library_name}/"
+        if normalized == self._library_name:
+            return ""
+        if normalized.startswith(library_prefix):
+            return normalized[len(library_prefix):]
+        return normalized
+
     def upload_file(
         self, file_path: str, remote_path: str, overwrite: bool = True
     ) -> dict:
@@ -120,6 +131,7 @@ class SharePointUploadClient:
                 file_contents = f.read()
 
             token = self._get_access_token()
+            remote_path = self._normalize_library_path(remote_path)
             result = self._upload_file_to_sharepoint(
                 token, remote_path, file_contents, overwrite
             )
@@ -161,6 +173,7 @@ class SharePointUploadClient:
 
         try:
             token = self._get_access_token()
+            remote_path = self._normalize_library_path(remote_path)
             result = self._upload_file_to_sharepoint(token, remote_path, file_bytes, overwrite)
 
             logger.info(f"File uploaded to SharePoint: {remote_path}")
@@ -229,6 +242,7 @@ class SharePointUploadClient:
 
         try:
             token = self._get_access_token()
+            folder_path = self._normalize_library_path(folder_path)
             result = self._create_folder_in_sharepoint(token, folder_path)
 
             logger.info(f"Folder created in SharePoint: {folder_path}")
@@ -254,6 +268,7 @@ class SharePointUploadClient:
 
         try:
             token = self._get_access_token()
+            remote_path = self._normalize_library_path(remote_path)
             self._delete_file_from_sharepoint(token, remote_path)
 
             logger.info(f"File deleted from SharePoint: {remote_path}")
@@ -346,43 +361,82 @@ class SharePointUploadClient:
             logger.error(f"Error obtaining access token: {e}")
             raise
 
-    def _execute_graph_request(self, request_factory, operation: str) -> bytes:
+    def _execute_graph_request(
+        self,
+        request_factory,
+        operation: str,
+        suppress_http_statuses: set[int] | None = None,
+    ) -> bytes:
         """Execute a Graph request and retry with delegated auth on auth failures when available."""
         attempts = [False]
         if self._has_password_auth:
             attempts.append(True)
+        max_timeout_retries = 2
+        suppressed_statuses = suppress_http_statuses or set()
+
+        def _is_timeout_error(exc: BaseException) -> bool:
+            if isinstance(exc, (TimeoutError, socket.timeout)):
+                return True
+            if isinstance(exc, URLError):
+                reason = exc.reason
+                if isinstance(reason, (TimeoutError, socket.timeout)):
+                    return True
+                return "timed out" in str(reason).lower()
+            return "timed out" in str(exc).lower()
 
         for prefer_password in attempts:
             token = self._get_access_token_for_mode(
                 prefer_password=prefer_password,
                 force_refresh=prefer_password,
             )
-            req = request_factory(token)
-            try:
-                with urlopen(req, timeout=self._timeout_seconds) as response:
-                    return response.read()
-            except HTTPError as e:
-                error_body = e.read().decode('utf-8', errors='replace') if hasattr(e, 'read') else str(e)
-                should_retry = (
-                    e.code in {401, 403}
-                    and not prefer_password
-                    and self._has_password_auth
-                    and self._auth_mode != "password"
-                )
-                if should_retry:
-                    logger.warning(
-                        "%s failed with status %s using %s auth; retrying with username/password flow. Response: %s",
-                        operation,
-                        e.code,
-                        self._auth_mode or "unknown",
-                        error_body,
+            for timeout_retry_index in range(max_timeout_retries + 1):
+                req = request_factory(token)
+                try:
+                    with urlopen(req, timeout=self._timeout_seconds) as response:
+                        return response.read()
+                except HTTPError as e:
+                    error_body = e.read().decode('utf-8', errors='replace') if hasattr(e, 'read') else str(e)
+                    should_retry = (
+                        e.code in {401, 403}
+                        and not prefer_password
+                        and self._has_password_auth
+                        and self._auth_mode != "password"
                     )
-                    self._token = None
-                    self._token_expires_at = None
-                    self._auth_mode = None
-                    continue
-                logger.error("%s failed: Status %s. Response: %s", operation, e.code, error_body)
-                raise
+                    if should_retry:
+                        logger.warning(
+                            "%s failed with status %s using %s auth; retrying with username/password flow. Response: %s",
+                            operation,
+                            e.code,
+                            self._auth_mode or "unknown",
+                            error_body,
+                        )
+                        self._token = None
+                        self._token_expires_at = None
+                        self._auth_mode = None
+                        break
+                    if e.code in suppressed_statuses:
+                        raise
+                    logger.error("%s failed: Status %s. Response: %s", operation, e.code, error_body)
+                    raise
+                except Exception as e:
+                    if _is_timeout_error(e) and timeout_retry_index < max_timeout_retries:
+                        logger.warning(
+                            "%s timed out (attempt %s/%s); retrying with timeout=%ss.",
+                            operation,
+                            timeout_retry_index + 1,
+                            max_timeout_retries + 1,
+                            self._timeout_seconds,
+                        )
+                        continue
+                    if _is_timeout_error(e):
+                        logger.error(
+                            "%s timed out after %s attempts with timeout=%ss. "
+                            "Consider increasing SHAREPOINT_TIMEOUT_SECONDS.",
+                            operation,
+                            max_timeout_retries + 1,
+                            self._timeout_seconds,
+                        )
+                    raise
 
         raise RuntimeError(f"{operation} failed unexpectedly without returning a response.")
 
@@ -390,6 +444,7 @@ class SharePointUploadClient:
         self, token: str, file_path: str, file_contents: bytes, overwrite: bool
     ) -> dict:
         """Upload file to SharePoint using Graph API."""
+        file_path = self._normalize_library_path(file_path)
         site_id = self._get_site_id(token)
         drive_id = self._get_drive_id(token, site_id)
 
@@ -421,6 +476,7 @@ class SharePointUploadClient:
 
     def _create_folder_in_sharepoint(self, token: str, folder_path: str) -> dict:
         """Create a folder in SharePoint."""
+        folder_path = self._normalize_library_path(folder_path)
         site_id = self._get_site_id(token)
         drive_id = self._get_drive_id(token, site_id)
 
@@ -459,6 +515,7 @@ class SharePointUploadClient:
 
     def _delete_file_from_sharepoint(self, token: str, file_path: str) -> None:
         """Delete a file from SharePoint."""
+        file_path = self._normalize_library_path(file_path)
         site_id = self._get_site_id(token)
         drive_id = self._get_drive_id(token, site_id)
         file_id = self._get_file_id(token, drive_id, file_path)
@@ -474,8 +531,10 @@ class SharePointUploadClient:
             f"Error deleting file {file_path}",
         )
 
+
     def _ensure_directory_exists(self, token: str, drive_id: str, folder_path: str) -> None:
         """Ensure all parent directories exist, creating them if necessary."""
+        folder_path = self._normalize_library_path(folder_path)
         path_parts = folder_path.rstrip("/").split("/")
         current_path = ""
 
@@ -571,6 +630,7 @@ class SharePointUploadClient:
 
     def _get_file_id(self, token: str, drive_id: str, file_path: str) -> str:
         """Get file ID by path."""
+        file_path = self._normalize_library_path(file_path)
         encoded_file_path = self._encode_graph_path(file_path)
         file_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{encoded_file_path}"
         headers = {"Authorization": f"Bearer {token}"}
@@ -584,16 +644,19 @@ class SharePointUploadClient:
                         headers={"Authorization": f"Bearer {current_token}"},
                     ),
                     f"Error getting file ID for '{file_path}'",
+                    suppress_http_statuses={404},
                 )
             )
             return file_response["id"]
         except HTTPError as e:
-            error_body = e.read().decode('utf-8') if hasattr(e, 'read') else str(e)
-            logger.error(f"Error getting file ID for '{file_path}': Status {e.code}. Response: {error_body}")
+            if e.code != 404:
+                error_body = e.read().decode('utf-8') if hasattr(e, 'read') else str(e)
+                logger.error(f"Error getting file ID for '{file_path}': Status {e.code}. Response: {error_body}")
             raise
 
     def _get_folder_id(self, token: str, drive_id: str, folder_path: str) -> str:
         """Get folder ID by path."""
+        folder_path = self._normalize_library_path(folder_path)
         encoded_folder_path = self._encode_graph_path(folder_path)
         folder_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/root:/{encoded_folder_path}"
         headers = {"Authorization": f"Bearer {token}"}
@@ -607,10 +670,12 @@ class SharePointUploadClient:
                         headers={"Authorization": f"Bearer {current_token}"},
                     ),
                     f"Error getting folder ID for '{folder_path}'",
+                    suppress_http_statuses={404},
                 )
             )
             return folder_response["id"]
         except HTTPError as e:
-            error_body = e.read().decode('utf-8') if hasattr(e, 'read') else str(e)
-            logger.error(f"Error getting folder ID for '{folder_path}': Status {e.code}. Response: {error_body}")
+            if e.code != 404:
+                error_body = e.read().decode('utf-8') if hasattr(e, 'read') else str(e)
+                logger.error(f"Error getting folder ID for '{folder_path}': Status {e.code}. Response: {error_body}")
             raise
