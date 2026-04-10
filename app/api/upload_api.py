@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 import logging
 import os
+import threading
+import time
 
 from flask import Flask, jsonify, request, send_file
 from werkzeug.exceptions import HTTPException
@@ -17,6 +19,9 @@ from app.services.peoplesoft_output_service import generate_amer_peoplesoft_outp
 from app.services.sharepoint_download_service import SharePointDownloadClient
 from app.services.sharepoint_move_service import SharePointMoveClient
 from app.services.sharepoint_upload_service import SharePointUploadClient
+from app.api.sharepoint_processor import sharepoint_download, sharepoint_upload
+from app.agents.cleaning_agent import cleaning_data_prosessing
+from app.services.ihg_servicenow_ticket_service import create_ticket_service_now
 
 logger = logging.getLogger(__name__)
 
@@ -438,10 +443,34 @@ def register_api_routes(app: Flask) -> None:
         local_dir = settings.upload_dir
 
         try:
-            downloaded_files = _get_sharepoint_download_client().download_all_files(remote_path, local_dir)
+            downloaded_files = sharepoint_download()
         except Exception as exc:
             logger.error("sharepoint_download_api failed: %s", exc)
             return jsonify({"error": str(exc)}), 500
+        
+        thread1 = threading.Thread(target=cleaning_data_prosessing, args=())
+        thread1.start()
+        
+        time.sleep(5)  # Add delay to ensure files are fully written to disk before responding 
+        thread2 = threading.Thread(target=sharepoint_upload, args=(remote_path, local_dir))
+        thread2.start()
+
+        time.sleep(15)  # Add delay to allow upload to start before responding 
+        pyaload = {
+            "requested_by": "AMER\\USM3PA",
+            "requested_for": "AMER\\USM3PA",
+            "location": "ATLR3",
+            "situation": "Merge profiles",
+            "business_service": "IHG University",
+            "service_category": "Application Support",
+            "assignment_group": "IY-GLBL-LMS Support Accenture",
+            "short_description": "LMS billing",
+            "description": "LMS billing",
+            "internal_notes": "",
+            "source": "RCC Tech Intake Form"
+        } 
+        thread3 = threading.Thread(target=create_ticket_service_now, args=(pyaload,))
+        thread3.start()
 
         return (
             jsonify(

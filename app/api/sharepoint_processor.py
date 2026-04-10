@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import datetime
 import logging
 import os
-import threading
 
 from flask import request
 
@@ -70,35 +69,35 @@ def sharepoint_download():
         local_dir = settings.upload_dir+"/Monthly_data"
         downloaded_monthly_report_files = download_file_from_sharepoint(remote_path, local_dir)
         status = status + "Monthly report files downloaded. "
-        download_count += len(downloaded_monthly_report_files)
+        download_count += 1
     except Exception as exc:
         logger.error("sharepoint_download_api failed: %s", exc)
         return {"error": str(exc)}
     
     # The HISTORY_CORP folder is expected to have the main historical billing files, so we attempt it first to ensure those critical files are downloaded even if there are issues with the NON-CORP history folder.
     try:
-        corp = ['AMER CORP', 'EMEAA CORP', 'APAC GC CORP', 'MEXICO CORP']
+        corp = ['AMER CROP', 'EMEAA CROP', 'APAC GC CROP', 'MEXICO CROP']
         remote_path =''
-        local_dir = settings.upload_dir+"/History_data/Corp"
+        local_dir = settings.upload_dir+"/History_data/Crop"
         for path in corp:
-            remote_path = settings.sharepoint_download_root_path.rstrip("/")+"/History Data/Corp" + "/" + path
+            remote_path = settings.sharepoint_download_root_path.rstrip("/")+"/History Data/Crop" + "/" + path
             downloaded_history_corp_files = download_file_from_sharepoint(remote_path, local_dir)
-            download_count += len(downloaded_history_corp_files)
-        status = status + "History CORP files downloaded. " 
+            download_count += 1
+        status = status + "History CROP files downloaded. " 
     except Exception as exc:
         logger.error("sharepoint_download_api failed: %s", exc)
         return {"error": str(exc)}
     
     # The NON-CORP folder is expected to have fewer files, so we attempt it last to ensure the main monthly report files are downloaded even if there are issues with the history folders.
     try:
-        non_corp = ['AMER NON CORP', 'EMEAA NON CORP', 'APAC GC NON CORP', 'MEXICO NON CORP']
+        non_crop = ['AMER NON CROP', 'EMEAA NON CROP', 'APAC GC NON CROP', 'MEXICO NON CROP']
         remote_path =''
-        local_dir = settings.upload_dir+"/History_data/NonCorp"
-        for path in non_corp:
-            remote_path = settings.sharepoint_download_root_path.rstrip("/")+"/History Data/NonCorp" + "/" + path
-            downloaded_history_NonCorp_files = download_file_from_sharepoint(remote_path, local_dir)
-            download_count += len(downloaded_history_NonCorp_files)
-        status = status + "History NON-CORP files downloaded. "
+        local_dir = settings.upload_dir+"/History_data/NonCrop"
+        for path in non_crop:
+            remote_path = settings.sharepoint_download_root_path.rstrip("/")+"/History Data/Non Crop" + "/" + path
+            downloaded_history_NonCrop_files = download_file_from_sharepoint(remote_path, local_dir)
+            download_count += 1
+        status = status + "History NON-CROP files downloaded. "
     except Exception as exc:
         logger.error("sharepoint_download_api failed: %s", exc)
         return {"error": str(exc)}
@@ -114,7 +113,7 @@ def sharepoint_upload(remote_path: str, local_file_path: str) -> dict:
         The caller provides the source file via local_file_path and the target
         SharePoint location via remote_path.
         """
-
+        print("Sharepoint upload api Initiated...............................")     
         if not remote_path or not isinstance(remote_path, str):
             return {"error": "'remote_path' is required and must be a string."}
         if not local_file_path or not isinstance(local_file_path, str):
@@ -124,19 +123,34 @@ def sharepoint_upload(remote_path: str, local_file_path: str) -> dict:
         if not remote_path:
             return {"error": "'remote_path' cannot be empty."}
         
-        final_remote_path = settings.sharepoint_download_root_path.rstrip("/")+ remote_path
-        final_local_path = settings.upload_dir+local_file_path
+        final_remote_path = settings.sharepoint_download_root_path + "/" + remote_path
 
-        source_path = final_local_path.strip()
-        if not os.path.isfile(source_path):
-            return {"error": f"Local file not found: {source_path}"}
+        # Resolve local_file_path relative to the project root (cwd).
+        resolved = os.path.normpath(
+            os.path.join(os.getcwd(), local_file_path.lstrip("/\\"))
+        )
+
+        # If caller passed a directory, pick the first file inside it.
+        if os.path.isdir(resolved):
+            candidates = [
+                os.path.join(resolved, f)
+                for f in os.listdir(resolved)
+                if os.path.isfile(os.path.join(resolved, f))
+            ]
+            if not candidates:
+                return {"error": f"No files found in directory: {resolved}"}
+            source_path = candidates[0]
+        elif os.path.isfile(resolved):
+            source_path = resolved
+        else:
+            return {"error": f"Local file not found: {resolved}"}
 
         try:
             result = _get_sharepoint_upload_client().upload_file(source_path, final_remote_path, overwrite=True)
         except Exception as exc:
             logger.error("sharepoint_upload_api failed: %s", exc)
             return {"error": str(exc)}
-
+        print("Sharepoint upload api completed............................")
         return {
             "status": "ok",
             "local_file_path": source_path,
