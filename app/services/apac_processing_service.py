@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import calendar
 import logging
 from decimal import Decimal, InvalidOperation
 from datetime import datetime
@@ -135,16 +134,6 @@ def _output_stem(source_stem: str, custom_stem: str | None) -> str:
     if source_stem.upper().startswith("CLEANED_NO_RED_"):
         return "APAC Processing"
     return source_stem
-
-
-def _default_apac_gc_intercompany_output_name(source_stem: str) -> str:
-    upper_stem = source_stem.upper()
-    if upper_stem.endswith("_APAC_GC_NONCROP"):
-        return f"{source_stem[:-len('_APAC_GC_NONCROP')]}_APAC_GC_INTERCOMPANY.xlsx"
-
-    month = calendar.month_name[datetime.now().month]
-    year = datetime.now().year
-    return f"APAC_GC_Intercompany billing lines_{month} {year}.xlsx"
 
 
 def _value_from_row(row_dict: dict[str, object], column_name: str) -> object:
@@ -299,9 +288,10 @@ def generate_apac_gc_intewrcompany_output(
     )
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    final_file_name = (base_file_name or _default_apac_gc_intercompany_output_name(source_path.stem)).strip()
-    if not final_file_name.lower().endswith(".xlsx"):
-        final_file_name += ".xlsx"
+    output_base_name = (base_file_name or "APAC_GC_Intercompany billing lines").strip()
+    if output_base_name.lower().endswith(".xlsx"):
+        output_base_name = output_base_name[:-5]
+    final_file_name = f"{output_base_name}_{datetime.now().strftime('%B %Y')}.xlsx"
     output_path = target_dir / final_file_name
 
     df = pd.read_excel(source_path, sheet_name=0)

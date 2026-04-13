@@ -204,9 +204,13 @@ def generate_gaf_apac_output(
 
     _set_cell_value_safe(upload_sheet, "I5", record_count)
 
-    final_file_name = (output_file_name or _default_output_name()).strip()
-    if not final_file_name.lower().endswith(".xlsx"):
-        final_file_name += ".xlsx"
+    base_name = (output_file_name or "GAF_GC_APAC_NON-CORP").strip() or "GAF_GC_APAC_NON-CORP"
+    if base_name.lower().endswith(".xlsx"):
+        base_name = base_name[:-5]
+    month_year = datetime.now().strftime("%B %Y")
+    if not base_name.endswith(month_year):
+        base_name = f"{base_name}_{month_year}"
+    final_file_name = f"{base_name}.xlsx"
     output_path = output_root / final_file_name
 
     if output_path.exists():

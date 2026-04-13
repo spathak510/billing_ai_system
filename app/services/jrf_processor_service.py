@@ -224,8 +224,9 @@ def generate_jrf_output(
         current_row += 1
         total_rows += 1
 
-    # Save the workbook
-    output_path = output_root / "JRF_Output.xlsm"
+    # Save the workbook with month/year in filename
+    month_year = datetime.now().strftime("%B_%Y")
+    output_path = output_root / f"Standard_Journal_Template_{month_year}.xlsm"
     
     # Delete existing file if it exists
     if output_path.exists():
