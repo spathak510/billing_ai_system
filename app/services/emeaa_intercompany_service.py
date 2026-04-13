@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
-from openpyxl import Workbook, load_workbook
+from openpyxl import load_workbook
 
 from app.config.settings import settings
 
@@ -21,122 +21,35 @@ def _resolve_input_path(input_file_path: str | None) -> Path:
     if input_file_path:
         return Path(input_file_path)
 
-    region_split_dir = Path(settings.output_dir) / "Region_Wise_Split"
-    region_split_amer_files = sorted(
-        region_split_dir.glob("AMER_*.xlsx"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    if region_split_amer_files:
-        return region_split_amer_files[0]
+    output_dir = Path(settings.output_dir) / "EMEAA" / "Output"
+    emeaa_v2_files = sorted(output_dir.glob("EMEAA_V2.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if emeaa_v2_files:
+        return emeaa_v2_files[0]
 
-    output_dir = Path(settings.output_dir)
-    amer_files = sorted(output_dir.glob("AMER_*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if amer_files:
-        return amer_files[0]
-
-    cleaned_files = sorted(output_dir.glob("cleaned_no_red_*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if cleaned_files:
-        return cleaned_files[0]
-
-    raise FileNotFoundError("No AMER_*.xlsx or cleaned_no_red_*.xlsx file found in output folder.")
+    raise FileNotFoundError("No EMEAA_V2.xlsx file found in output/EMEAA/Output.")
 
 
-def _resolve_template_path(template_path: str | None) -> Path | None:
+def _resolve_template_path(template_path: str | None) -> Path:
     if template_path:
         resolved = Path(template_path)
         if not resolved.exists():
             raise FileNotFoundError(f"Template file not found: {resolved}")
         return resolved
 
-    template_dir = Path(settings.output_dir) / "AMER_Intercompny" / "Template_Format"
+    template_dir = Path(settings.output_dir) / "EMEAA" / "EMEAA_Intercompany" / "Template_Formate"
     template_files = sorted(template_dir.glob("*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
     if template_files:
         return template_files[0]
 
-    legacy_dir = Path(settings.output_dir) / "AMER_Intercompny"
-    legacy_templates = sorted(legacy_dir.glob("*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if legacy_templates:
-        return legacy_templates[0]
-
-    return None
+    raise FileNotFoundError(
+        "EMEAA Intercompany template not found in output/EMEAA/EMEAA_Intercompany/Template_Formate."
+    )
 
 
 def _default_output_name() -> str:
     month = calendar.month_name[datetime.now().month]
     year = datetime.now().year
-    return f"AMER_Intercompany billing lines_{month} {year}.xlsx"
-
-
-def _next_available_path(path: Path) -> Path:
-    if not path.exists():
-        return path
-
-    stem = path.stem
-    suffix = path.suffix
-    index = 1
-    while True:
-        candidate = path.parent / f"{stem}_{index}{suffix}"
-        if not candidate.exists():
-            return candidate
-        index += 1
-
-
-def _create_default_workbook() -> Workbook:
-    wb = Workbook()
-    rir_sheet = wb.active
-    rir_sheet.title = "RIR"
-    billing_sheet = wb.create_sheet(title="BILLING LINES")
-
-    billing_headers = [
-        "USERNAME",
-        "EMPLOYEE",
-        "HOLIDEX",
-        "AMOUNT",
-        "CURRENCYCODE",
-        "COST_CENTER",
-        "ORDER_NO",
-        "COURSE_NAME",
-        "FACILITY",
-        "OFFERING_ID",
-        "INSTRUCTOR",
-        "OFFERING_DATE",
-        "COUNTRY",
-        "REGION",
-        "USER_TYPE",
-        "TRANSTYPECODE",
-        "PAY_DATE",
-        "NAME",
-        "DELIVERED_ON",
-        "REVENUE",
-        "BU",
-    ]
-    for col_idx, header in enumerate(billing_headers, start=1):
-        billing_sheet.cell(row=1, column=col_idx).value = header
-
-    return wb
-
-
-def _load_workbook_for_output(template_path: Path | None) -> tuple[Workbook, str]:
-    if template_path is None:
-        return _create_default_workbook(), "generated"
-
-    wb = load_workbook(template_path)
-    if "RIR" in wb.sheetnames and "BILLING LINES" in wb.sheetnames:
-        return wb, str(template_path)
-
-    logger.warning(
-        "AMER Intercompany template %s does not contain RIR and BILLING LINES sheets. Using generated workbook.",
-        template_path,
-    )
-    return _create_default_workbook(), "generated"
-
-
-def _find_revenue_column(columns: list[object]) -> str | None:
-    for col in columns:
-        if "REVEN" in _normalized_key(col):
-            return str(col)
-    return None
+    return f"EMEAA_Intercompany billing lines_{month} {year}.xlsx"
 
 
 def _value_from_row(row_dict: dict[str, object], column_name: str) -> object:
@@ -147,21 +60,23 @@ def _value_from_row(row_dict: dict[str, object], column_name: str) -> object:
     return ""
 
 
-def _filter_amer_rows(df: pd.DataFrame) -> pd.DataFrame:
-    # Input data from Region_Wise_Split is already filtered to AMER region by BU prefix.
-    # Return the dataframe as-is without re-filtering.
-    return df.copy()
-
-
 def _clear_billing_lines(ws) -> None:
     if ws.max_row <= 1:
         return
+
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=26):
         for cell in row:
             cell.value = None
 
 
-def generate_amer_intercompany_output(
+def _find_revenue_column(columns: list[object]) -> str | None:
+    for col in columns:
+        if "REVEN" in _normalized_key(col):
+            return str(col)
+    return None
+
+
+def generate_emeaa_intercompany_output(
     input_file_path: str | None = None,
     template_path: str | None = None,
     output_folder_path: str | None = None,
@@ -170,29 +85,31 @@ def generate_amer_intercompany_output(
     request_name: str = "",
     account_number: str = "",
 ) -> dict[str, str | int]:
-    """Generate AMER Intercompany billing-lines workbook from cleaned/split AMER data."""
+    """Generate EMEAA Intercompany workbook from EMEAA V2 collection data."""
     source_path = _resolve_input_path(input_file_path)
     resolved_template = _resolve_template_path(template_path)
 
-    target_dir = Path(output_folder_path) if output_folder_path else Path(settings.output_dir) / "AMER_Intercompny" / "Output"
+    target_dir = (
+        Path(output_folder_path)
+        if output_folder_path
+        else Path(settings.output_dir) / "EMEAA" / "EMEAA_Intercompany" / "Output"
+    )
     target_dir.mkdir(parents=True, exist_ok=True)
 
     final_file_name = (base_file_name or _default_output_name()).strip()
     if not final_file_name.lower().endswith(".xlsx"):
         final_file_name += ".xlsx"
-
     output_path = target_dir / final_file_name
-    if resolved_template is not None and output_path.resolve() == resolved_template.resolve():
-        output_path = _next_available_path(output_path)
-    elif output_path.exists():
-        output_path = _next_available_path(output_path)
 
     df = pd.read_excel(source_path, sheet_name=0)
-    amer_df = _filter_amer_rows(df)
-    if amer_df.empty:
-        raise ValueError("BillingCollection is EMPTY for AMER Intercompany processing.")
+    if df.empty:
+        raise ValueError("BillingCollection is EMPTY for EMEAA Intercompany processing.")
 
-    wb, template_used = _load_workbook_for_output(resolved_template)
+    wb = load_workbook(resolved_template)
+    if "RIR" not in wb.sheetnames or "BILLING LINES" not in wb.sheetnames:
+        raise ValueError(
+            f"EMEAA Intercompany template {resolved_template} does not contain RIR and BILLING LINES sheets."
+        )
 
     rir_sheet = wb["RIR"]
     billing_sheet = wb["BILLING LINES"]
@@ -203,8 +120,8 @@ def generate_amer_intercompany_output(
 
     _clear_billing_lines(billing_sheet)
 
-    rows = amer_df.to_dict(orient="records")
-    revenue_col = _find_revenue_column(list(amer_df.columns))
+    rows = df.to_dict(orient="records")
+    revenue_col = _find_revenue_column(list(df.columns))
 
     write_row = 2
     for row_dict in rows:
@@ -231,11 +148,14 @@ def generate_amer_intercompany_output(
         billing_sheet.cell(write_row, 21).value = _value_from_row(row_dict, "BU")
         write_row += 1
 
+    if output_path.exists():
+        output_path.unlink()
+
     wb.save(output_path)
-    logger.info("Generated AMER Intercompany output: %s", output_path)
+    logger.info("Generated EMEAA Intercompany output: %s", output_path)
     return {
-        "amer_intercompany_file": str(output_path),
-        "amer_intercompany_rows": len(rows),
-        "template_file": template_used,
+        "emeaa_intercompany_file": str(output_path),
+        "emeaa_intercompany_rows": len(rows),
+        "template_file": str(resolved_template),
         "source_file": str(source_path),
     }

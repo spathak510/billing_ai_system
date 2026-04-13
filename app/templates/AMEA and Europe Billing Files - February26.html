@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{subject}}</title>
+  <style>
+    body {
+      font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+      background-color: #ffffff;
+      margin: 0;
+      padding: 0;
+      color: #1a1a1a;
+    }
+    .container {
+      max-width: 980px;
+      margin: 24px auto;
+      padding: 0 28px 28px;
+    }
+    .content {
+      font-size: 14px;
+      line-height: 1.45;
+      color: #151515;
+    }
+    .content p {
+      margin: 0 0 18px;
+    }
+    .message-box {
+      white-space: pre-line;
+      margin: 0 0 18px;
+    }
+    .message-box:empty {
+      display: none;
+    }
+    .signature {
+      margin-top: 10px;
+    }
+    @media (max-width: 768px) {
+      .container {
+        margin: 12px auto;
+        padding: 0 16px 18px;
+      }
+      .content {
+        font-size: 14px;
+      }
+      .content p {
+        margin: 0 0 16px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="content">
+      <p>Hi {{recipient_name}},</p>
+
+      <p>PFA the Non-Corp files for APAC&amp;GC and Europe region for the month of February 2026.</p>
+
+      <p class="message-box">{{message}}</p>
+
+      <p class="signature">Thanks &amp; Regards,<br/>Aamna Afreen</p>
+    </div>
+  </div>
+</body>
+</html>

@@ -14,6 +14,7 @@ from werkzeug.exceptions import HTTPException
 from app.config.settings import settings
 from app.agents.mail_reader_agent import MailReaderAgent
 from app.services.billing_service import process_billing_file
+from app.services.cleanup_service import cleanup_all_outputs, cleanup_specific_folder
 from app.services.excel_filter_service import remove_red_rows_from_excel
 from app.services.peoplesoft_output_service import generate_amer_peoplesoft_output
 from app.services.sharepoint_download_service import SharePointDownloadClient
@@ -279,8 +280,8 @@ def register_api_routes(app: Flask) -> None:
         if isinstance(from_address, str):
             from_address = from_address.strip()
 
-        recipient_name = data.get("recipient_name") or "Team"
-        message = data.get("message") or ""
+        recipient_name = data['template_variables'].get("recipient_name") or "Team"
+        message = data['template_variables'].get("message") or ""
         body = data.get("body")
         body_type = (data.get("body_type") or "text").lower()
         template_name = data.get("template_name")
@@ -605,3 +606,102 @@ def register_api_routes(app: Flask) -> None:
             ),
             200,
         )
+
+    @app.post("/api/v1/cleanup/all")
+    def cleanup_all_api():
+        """Remove all flow output files and cleanup generated files from data folder.
+
+        This endpoint recursively deletes:
+        - ALL files in output/ folder (preserves folder structure & templates)
+        - cleaned_no_red_*.xlsx files from data/ folder (preserves original inputs)
+
+        Preserves:
+        - Folder structure (directories are not deleted, only contents)
+        - Template files (files/folders containing 'template' in the name)
+        - Original input files in data/ folder (only removes generated cleanup files)
+
+        Request JSON body (optional)::
+
+            {
+                "confirm": true  # Safe to omit - just call the endpoint
+            }
+
+        Response::
+
+            {
+                "status": "success",
+                "message": "Cleanup completed successfully (output/ and data/cleaned files removed)",
+                "files_deleted": 125,
+                "folders_scanned": 45,
+                "size_freed_mb": 156.34,
+                "locations_cleaned": ["output", "data"],
+                "removed_paths": [
+                    "output/AMER_Intercompny/Output/AMER_Intercompany billing lines_April 2026.xlsx",
+                    "output/APAC/APAC_Output/APAC Processing_APAC_GC_CROP.xlsx",
+                    "data/cleaned_no_red_2026.02 Global Corp & Non-Corp February 2026 - Learning Updated 2026.02.18.xlsx",
+                    ...
+                ]
+            }
+        """
+        try:
+            result = cleanup_all_outputs()
+        except Exception as exc:
+            logger.error("cleanup_all_api failed: %s", exc)
+            return jsonify({"error": str(exc), "status": "error"}), 500
+
+        status_code = 200 if result.get("status") == "success" else 500
+        return jsonify(result), status_code
+
+    @app.post("/api/v1/cleanup/folder")
+    def cleanup_folder_api():
+        """Remove all files from a specific output subfolder.
+
+        Preserves template files within the folder.
+
+        Request JSON body::
+
+            {
+                "folder_name": "AMER_Intercompny"  # required: subfolder in output/
+            }
+
+        Supported folder names:
+        - AMER_Intercompny
+        - APAC
+        - EMEAA
+        - Region_Wise_Split
+        - GAF_APAC_PROCESSER
+        - JRF
+        - Monthly_cleaned_report
+        - RIR_APAC
+
+        Response::
+
+            {
+                "status": "success",
+                "message": "Cleanup completed for folder 'AMER_Intercompny'",
+                "files_deleted": 15,
+                "size_freed_mb": 12.45,
+                "removed_paths": [
+                    "AMER_Intercompny/Output/AMER_Intercompany billing lines_April 2026.xlsx"
+                ]
+            }
+        """
+        data = request.get_json(force=True, silent=True) or {}
+        folder_name = data.get("folder_name")
+
+        if not folder_name or not isinstance(folder_name, str):
+            return jsonify(
+                {
+                    "error": "'folder_name' is required and must be a string.",
+                    "status": "error",
+                }
+            ), 400
+
+        try:
+            result = cleanup_specific_folder(folder_name.strip())
+        except Exception as exc:
+            logger.error("cleanup_folder_api failed for folder '%s': %s", folder_name, exc)
+            return jsonify({"error": str(exc), "status": "error"}), 500
+
+        status_code = 200 if result.get("status") == "success" else 500
+        return jsonify(result), status_code
