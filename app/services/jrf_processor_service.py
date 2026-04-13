@@ -63,6 +63,25 @@ def _set_cell_value_safe(ws, cell_ref: str, value: object) -> None:
     ws[cell_ref].value = value
 
 
+def _resolve_template_path() -> Path:
+    output_root = Path(settings.output_dir) / "JRF"
+    template_dirs = [
+        output_root / "Template_Formate",
+        output_root / "Template_Format",
+        output_root,
+    ]
+
+    for template_dir in template_dirs:
+        template_candidates = sorted(template_dir.glob("*.xlsm"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if template_candidates:
+            return template_candidates[0]
+
+    raise FileNotFoundError(
+        f"JRF template (.xlsm) not found in {output_root / 'Template_Formate'} or {output_root}. "
+        f"Please place a template file in output/JRF/Template_Formate."
+    )
+
+
 def generate_jrf_output(
     input_file_path: str | None = None,
     requester_name: str = "",
@@ -110,19 +129,11 @@ def generate_jrf_output(
         raise ValueError(f"Missing required columns for JRF processing: {', '.join(missing)}")
 
     # Find or create output directory
-    output_root = Path(settings.output_dir) / "JRF"
+    output_root = Path(settings.output_dir) / "JRF" / "Output"
     output_root.mkdir(parents=True, exist_ok=True)
 
-    # Load template - look for .xlsm file
-    template_candidates = list(output_root.glob("*.xlsm"))
-    if not template_candidates:
-        raise FileNotFoundError(
-            f"JRF template (.xlsm) not found in {output_root}. "
-            f"Please place a template file in the output/JRF directory."
-        )
-
-    # Use the first template found (typically the most recent or the only one)
-    template_path = template_candidates[0]
+    # Load template from Template_Formate (with compatibility fallbacks)
+    template_path = _resolve_template_path()
     
     logger.info("Using JRF template: %s", template_path)
 

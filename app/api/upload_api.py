@@ -26,6 +26,10 @@ from app.services.ihg_servicenow_ticket_service import create_ticket_service_now
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_REMOVE_RED_FILENAME = (
+    "2026.02 Global Corp & Non-Corp February 2026 - Learning Updated 2026.02.18.xlsx"
+)
+
 mail_agent = MailReaderAgent()
 
 # Lazy-initialized SharePoint clients to avoid 401 errors at module import time
@@ -337,11 +341,20 @@ def register_api_routes(app: Flask) -> None:
         data = request.get_json(force=True, silent=True) or {}
         filename = data.get("filename")
 
-        if not filename or not isinstance(filename, str):
-            return jsonify({"error": "'filename' is required and must be a string."}), 400
+        if filename is not None and not isinstance(filename, str):
+            return jsonify({"error": "'filename' must be a string when provided."}), 400
 
-        safe_name = os.path.basename(filename)
-        source_path = os.path.join(settings.upload_dir, safe_name)
+        if filename and filename.strip():
+            safe_name = os.path.basename(filename.strip())
+            source_path = os.path.join(settings.upload_dir, safe_name)
+        else:
+            source_path = os.path.join(
+                settings.upload_dir,
+                "Post_validation_data",
+                DEFAULT_REMOVE_RED_FILENAME,
+            )
+            safe_name = os.path.basename(source_path)
+
         if not os.path.isfile(source_path):
             return jsonify({"error": f"File not found in data folder: {safe_name}"}), 404
 

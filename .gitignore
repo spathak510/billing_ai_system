@@ -6,3 +6,4 @@ pycache/
 output/
 data/
 APPLICATION_DETAILED_GUIDE.md
+data/cleaned_no_red_*.xlsx

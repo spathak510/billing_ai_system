@@ -33,7 +33,8 @@ def _ensure_expected_output_dirs() -> None:
         output_root / "APAC" / "APAC_GC_RIR" / "Output",
         output_root / "EMEAA" / "Output",
         output_root / "EMEAA" / "EMEAA_Intercompany" / "Output",
-        output_root / "JRF",
+        output_root / "JRF" / "Template_Formate",
+        output_root / "JRF" / "Output",
     ]
     for directory in expected_dirs:
         directory.mkdir(parents=True, exist_ok=True)
