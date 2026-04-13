@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -26,11 +27,9 @@ def _resolve_input_path(input_file_path: str | None) -> Path:
     raise FileNotFoundError("No cleaned_no_red_*.xlsx or AMER_*.xlsx file found in output folder.")
 
 
-def _normalized_output_stem(stem: str) -> str:
-    # Match existing business naming convention such as
-    # PeopleSoft Format For AMER_CORP.csv / ..._NONCORP.csv.
-    _ = stem
-    return "PeopleSoft Format For AMER"
+def _date_suffix() -> str:
+    """Return today's date as mmddyyyy string, e.g. 04132026."""
+    return date.today().strftime("%m%d%Y")
 
 
 def _filter_amer_rows(df: pd.DataFrame) -> pd.DataFrame:
@@ -83,21 +82,25 @@ def generate_amer_peoplesoft_output(
     output_dir = Path(settings.output_dir) / "AMER" / "AMER_Output"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    file_stem = output_stem.strip() if output_stem and output_stem.strip() else _normalized_output_stem(source_path.stem)
-    corp_csv_path = output_dir / f"{file_stem}_CORP.csv"
-    noncorp_csv_path = output_dir / f"{file_stem}_NONCORP.csv"
+    date_str = _date_suffix()
+    corp_csv_path = output_dir / f"CORP_BILLING_{date_str}.csv"
+    noncorp_csv_path = output_dir / f"NONCORP_BILLING_{date_str}.csv"
+    combined_csv_path = output_dir / f"NONCORP&CORP_BILLING_{date_str}.csv"
 
     # Open CSV writers
     corp_writer = open(corp_csv_path, "w", encoding="utf-8")
     noncorp_writer = open(noncorp_csv_path, "w", encoding="utf-8")
+    combined_writer = open(combined_csv_path, "w", encoding="utf-8")
 
     try:
         corp_count = 0
         noncorp_count = 0
+        combined_count = 0
 
         # Write headers
         corp_writer.write("HDR|08|2019\n")
         noncorp_writer.write("HDR|08|2019\n")
+        combined_writer.write("HDR|08|2019\n")
 
         # Normalize column names (case-insensitive lookup)
         col_map = {col.upper(): col for col in df.columns}
@@ -163,7 +166,9 @@ def generate_amer_peoplesoft_output(
                 # CORP: idValue|ownerId||amount
                 line = f"{id_value}|{owner_id}||{amount}\n"
                 corp_writer.write(line)
+                combined_writer.write(line)
                 corp_count += 1
+                combined_count += 1
 
             elif user_type in {"F", "H"}:
                 # NON-CORP: idValue|ownerId|holidex|amount
@@ -171,11 +176,14 @@ def generate_amer_peoplesoft_output(
                 if len(holidex) == 5:
                     line = f"{id_value}|{owner_id}|{holidex}|{amount}\n"
                     noncorp_writer.write(line)
+                    combined_writer.write(line)
                     noncorp_count += 1
+                    combined_count += 1
 
         # Write trailers
         corp_writer.write(f"TRL|{corp_count:010d}\n")
         noncorp_writer.write(f"TRL|{noncorp_count:010d}\n")
+        combined_writer.write(f"TRL|{combined_count:010d}\n")
 
         logger.info(
             "Generated PeopleSoft CORP output: %s (rows=%d)",
@@ -187,14 +195,22 @@ def generate_amer_peoplesoft_output(
             noncorp_csv_path,
             noncorp_count,
         )
+        logger.info(
+            "Generated PeopleSoft COMBINED output: %s (rows=%d)",
+            combined_csv_path,
+            combined_count,
+        )
 
         return {
             "corp_file": str(corp_csv_path),
             "noncorp_file": str(noncorp_csv_path),
+            "combined_file": str(combined_csv_path),
             "corp_count": corp_count,
             "noncorp_count": noncorp_count,
+            "combined_count": combined_count,
         }
 
     finally:
         corp_writer.close()
         noncorp_writer.close()
+        combined_writer.close()

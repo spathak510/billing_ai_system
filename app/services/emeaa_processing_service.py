@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import pandas as pd
-from openpyxl import load_workbook
 
 from app.config.settings import settings
 
@@ -17,12 +15,44 @@ def _resolve_input_path(input_file_path: str | None) -> Path:
     if input_file_path:
         return Path(input_file_path)
 
+    region_split_dir = Path(settings.output_dir) / "Region_Wise_Split"
+    region_split_emeaa_files = sorted(
+        region_split_dir.glob("EMEAA_*.xlsx"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if region_split_emeaa_files:
+        return region_split_emeaa_files[0]
+
     output_dir = Path(settings.output_dir)
+    emeaa_files = sorted(output_dir.glob("EMEAA_*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if emeaa_files:
+        return emeaa_files[0]
+
     cleaned_files = sorted(output_dir.glob("cleaned_no_red_*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
     if cleaned_files:
         return cleaned_files[0]
 
-    raise FileNotFoundError("No cleaned_no_red_*.xlsx file found in output folder.")
+    raise FileNotFoundError("No EMEAA_*.xlsx or cleaned_no_red_*.xlsx file found in output folder.")
+
+
+def _resolve_template_path(template_path: str | None) -> Path | None:
+    if template_path:
+        resolved = Path(template_path)
+        if not resolved.exists():
+            raise FileNotFoundError(f"Template file not found: {resolved}")
+        return resolved
+
+    template_dir = Path(settings.output_dir) / "EMEAA" / "Template_Formate"
+    preferred_template = template_dir / "EMEAA_Intercompany billing lines_January26.xlsx"
+    if preferred_template.exists():
+        return preferred_template
+
+    template_files = sorted(template_dir.glob("*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if template_files:
+        return template_files[0]
+
+    return None
 
 
 def _to_decimal(value: object) -> Decimal:
@@ -35,56 +65,23 @@ def _to_decimal(value: object) -> Decimal:
         return Decimal("0")
 
 
-def _generate_emeaa_noncorp_formatted_output(
-    rows: list[dict[str, object]],
-    source_columns: list[str],
-) -> str | None:
-    base_dir = Path(settings.output_dir) / "EMEAA"
-    template_path = base_dir / "EMEAA_INP_FORMAT" / "EMEAA_Intercompany billing lines_January26.xlsx"
-    output_dir = base_dir / "EMEAA_Output"
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    if not template_path.exists():
-        logger.warning("EMEAA template not found: %s", template_path)
-        return None
-
-    wb = load_workbook(template_path)
-    if "BILLING LINES" not in wb.sheetnames:
-        logger.warning("EMEAA template missing BILLING LINES sheet: %s", template_path)
-        return None
-
-    ws = wb["BILLING LINES"]
-    headers = [cell.value for cell in ws[1] if cell.value not in (None, "")]
-    header_names = [str(h).strip() for h in headers]
-    if not header_names:
-        logger.warning("No BILLING LINES headers found in EMEAA template: %s", template_path)
-        return None
-
-    if ws.max_row > 1:
-        ws.delete_rows(2, ws.max_row - 1)
-
-    source_map = {str(col).strip().upper(): col for col in source_columns}
-    for row_dict in rows:
-        output_row: list[object] = []
-        for header in header_names:
-            source_col = source_map.get(header.upper())
-            output_row.append(row_dict.get(source_col) if source_col else None)
-        ws.append(output_row)
-
-    if "RIR" in wb.sheetnames:
-        wb["RIR"]["F10"] = datetime.now().date()
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_path = output_dir / f"EMEAA_NON_CROP_{timestamp}.xlsx"
-    wb.save(output_path)
-    logger.info("Generated EMEAA formatted output: %s", output_path)
-    return str(output_path)
-
-
-def generate_emeaa_processing_output(input_file_path: str | None = None) -> dict[str, str | int]:
-    """Run EMEAA V1/V2/GAF logic from cleaned data and produce formatted NON_CROP output."""
+def generate_emeaa_processing_output(
+    input_file_path: str | None = None,
+    template_path: str | None = None,
+    output_folder_path: str | None = None,
+) -> dict[str, str | int]:
+    """Run EMEAA V1/V2/GAF logic and generate three EMEAA collection outputs."""
     source_path = _resolve_input_path(input_file_path)
+    resolved_template = _resolve_template_path(template_path)
+    if resolved_template is None:
+        logger.warning("EMEAA template not found; continuing collection generation without template.")
     df = pd.read_excel(source_path, sheet_name=0)
+
+    # Match VBO behavior: ensure invoice columns exist in all output collections.
+    if "INVOICE_NO" not in df.columns:
+        df["INVOICE_NO"] = ""
+    if "INVOICE_DATE" not in df.columns:
+        df["INVOICE_DATE"] = ""
 
     col_map = {str(col).upper(): col for col in df.columns}
     bu_col = col_map.get("BU")
@@ -108,6 +105,8 @@ def generate_emeaa_processing_output(input_file_path: str | None = None) -> dict
     emeaa_v1_rows: list[dict[str, object]] = []
     emeaa_v2_rows: list[dict[str, object]] = []
     emeaa_gaf_rows: list[dict[str, object]] = []
+    corp_count = 0
+    noncorp_count = 0
 
     for _, row in df.iterrows():
         bu = str(row.get(bu_col, "")).strip().upper()
@@ -126,33 +125,45 @@ def generate_emeaa_processing_output(input_file_path: str | None = None) -> dict
         base_row[amount_col] = float(amount)
         base_row[currency_col] = currency
 
-        emeaa_v1_rows.append(dict(base_row))
+        if user_type == "C":
+            corp_count += 1
+            emeaa_v1_rows.append(dict(base_row))
 
-        v2_row = dict(base_row)
-        if amount >= 0:
-            v2_row["INVOICE_NO"] = "N/A"
-            v2_row["INVOICE_DATE"] = "N/A"
-        emeaa_v2_rows.append(v2_row)
+        if user_type in {"F", "H"}:
+            noncorp_count += 1
+            v2_row = dict(base_row)
+            if amount >= 0:
+                v2_row["INVOICE_NO"] = "N/A"
+                v2_row["INVOICE_DATE"] = "N/A"
+            emeaa_v2_rows.append(v2_row)
 
-        if amount < 0 and user_type != "C":
-            emeaa_gaf_rows.append(dict(base_row))
+            if amount < 0:
+                emeaa_gaf_rows.append(dict(base_row))
 
-    emeaa_noncorp_rows = [
-        row for row in emeaa_v2_rows if str(row.get(user_type_col, "")).strip().upper() != "C"
-    ]
+    output_dir = Path(output_folder_path) if output_folder_path else Path(settings.output_dir) / "EMEAA" / "Output"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    formatted_path = _generate_emeaa_noncorp_formatted_output(
-        rows=emeaa_noncorp_rows,
-        source_columns=list(df.columns),
-    )
+    emeaa_v1_path = output_dir / "EMEAA_V1.xlsx"
+    emeaa_v2_path = output_dir / "EMEAA_V2.xlsx"
+    emeaa_gaf_path = output_dir / "EMEAA_GAF.xlsx"
+
+    pd.DataFrame(emeaa_v1_rows, columns=df.columns).to_excel(emeaa_v1_path, index=False)
+    pd.DataFrame(emeaa_v2_rows, columns=df.columns).to_excel(emeaa_v2_path, index=False)
+    pd.DataFrame(emeaa_gaf_rows, columns=df.columns).to_excel(emeaa_gaf_path, index=False)
+
+    logger.info("Generated EMEAA collections: %s, %s, %s", emeaa_v1_path, emeaa_v2_path, emeaa_gaf_path)
 
     result: dict[str, str | int] = {
+        "corp_count": corp_count,
+        "noncorp_count": noncorp_count,
         "emeaa_v1_rows": len(emeaa_v1_rows),
         "emeaa_v2_rows": len(emeaa_v2_rows),
         "emeaa_gaf_rows": len(emeaa_gaf_rows),
-        "emeaa_noncorp_rows": len(emeaa_noncorp_rows),
+        "emeaa_v1_path": str(emeaa_v1_path),
+        "emeaa_v2_path": str(emeaa_v2_path),
+        "emeaa_gaf_path": str(emeaa_gaf_path),
+        "template_file": str(resolved_template) if resolved_template else "",
+        "source_file": str(source_path),
     }
-    if formatted_path:
-        result["emeaa_noncorp_formatted_path"] = formatted_path
 
     return result

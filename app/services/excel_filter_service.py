@@ -6,8 +6,12 @@ from pathlib import Path
 from openpyxl import Workbook, load_workbook
 
 from app.config.settings import settings
-from app.services.apac_processing_service import generate_apac_processing_output, generate_rir_files_from_apac_output
+from app.services.apac_processing_service import (
+    generate_apac_gc_intewrcompany_output,
+    generate_apac_processing_output,
+)
 from app.services.amer_intercompany_service import generate_amer_intercompany_output
+from app.services.emeaa_intercompany_service import generate_emeaa_intercompany_output
 from app.services.emeaa_processing_service import generate_emeaa_processing_output
 from app.services.gaf_apac_processor_service import generate_gaf_apac_output
 from app.services.rir_apac_processor_service import generate_rir_apac_output
@@ -15,6 +19,25 @@ from app.services.jrf_processor_service import generate_jrf_output
 from app.services.peoplesoft_output_service import generate_amer_peoplesoft_output
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_expected_output_dirs() -> None:
+    output_root = Path(settings.output_dir)
+    expected_dirs = [
+        output_root / "Region_Wise_Split",
+        output_root / "AMER" / "AMER_Output",
+        output_root / "AMER_Intercompny" / "Output",
+        output_root / "APAC" / "APAC_Output",
+        output_root / "APAC" / "APAC_Intercompny" / "Output",
+        output_root / "APAC" / "GAF_APAC_Processor" / "Output",
+        output_root / "APAC" / "APAC_GC_RIR" / "Output",
+        output_root / "EMEAA" / "Output",
+        output_root / "EMEAA" / "EMEAA_Intercompany" / "Output",
+        output_root / "JRF" / "Template_Formate",
+        output_root / "JRF" / "Output",
+    ]
+    for directory in expected_dirs:
+        directory.mkdir(parents=True, exist_ok=True)
 
 
 def _find_column(header_row: list[object], column_name: str) -> int | None:
@@ -75,27 +98,16 @@ def _split_user_type_collections(cleaned_workbook: Workbook, source_stem: str) -
     logger.info("Created NonCorpCollection file: %s", non_corp_path)
 
 
-def _region_bucket(bu: str, region: str) -> str | None:
-    if bu.startswith("A"):
-        return "AMER"
-    if bu.startswith("P"):
-        if region == "GC":
-            return "GC"
-        return "APAC"
-    if bu.startswith("H"):
-        return "EMEAA"
-    return None
-
-
 def _split_region_collections(cleaned_workbook: Workbook, source_stem: str) -> dict[str, str]:
-    output_dir = Path(settings.output_dir)
+    output_dir = Path(settings.output_dir) / "Region_Wise_Split"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     region_workbooks = {
         "AMER": Workbook(),
         "APAC": Workbook(),
-        "EMEAA": Workbook(),
         "GC": Workbook(),
+        "APAC_GC": Workbook(),
+        "EMEAA": Workbook(),
     }
 
     for workbook in region_workbooks.values():
@@ -136,9 +148,19 @@ def _split_region_collections(cleaned_workbook: Workbook, source_stem: str) -> d
             if region_index is not None and region_index < len(row_values):
                 region = str(row_values[region_index]).strip().upper()
 
-            bucket = _region_bucket(bu, region)
-            if bucket is not None:
-                region_sheets[bucket].append(row_values)
+            # AMER: BU starts with A
+            if bu.startswith("A"):
+                region_sheets["AMER"].append(row_values)
+            # APAC_GC (combined) + split to APAC & GC: BU starts with P
+            elif bu.startswith("P"):
+                region_sheets["APAC_GC"].append(row_values)
+                if region == "GC":
+                    region_sheets["GC"].append(row_values)
+                else:
+                    region_sheets["APAC"].append(row_values)
+            # EMEAA: BU starts with H
+            elif bu.startswith("H"):
+                region_sheets["EMEAA"].append(row_values)
 
     output_paths: dict[str, str] = {}
     for region_name, workbook in region_workbooks.items():
@@ -241,6 +263,8 @@ def remove_red_rows_from_excel(
     output_dir: str | None = None,
 ) -> str:
     """Create a new Excel file excluding rows with red-filled cells."""
+    _ensure_expected_output_dirs()
+
     source_path = Path(input_file_path)
     target_dir = Path(output_dir or settings.upload_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -270,7 +294,7 @@ def remove_red_rows_from_excel(
     output_workbook.save(output_path)
 
     _split_user_type_collections(cleaned_workbook=output_workbook, source_stem=source_path.stem)
-    _split_region_collections(cleaned_workbook=output_workbook, source_stem=source_path.stem)
+    region_output_paths = _split_region_collections(cleaned_workbook=output_workbook, source_stem=source_path.stem)
     _split_intercompany_collections(cleaned_workbook=output_workbook, source_stem=source_path.stem)
 
     try:
@@ -279,34 +303,81 @@ def remove_red_rows_from_excel(
         logger.warning("Failed AMER PeopleSoft generation for cleaned file %s: %s", output_path, exc)
 
     try:
-        generate_amer_intercompany_output(input_file_path=str(output_path))
+        amer_file = region_output_paths.get("AMER")
+        if amer_file:
+            generate_amer_intercompany_output(input_file_path=amer_file)
+        else:
+            logger.warning("AMER region file not found in region split output")
     except Exception as exc:
         logger.warning("Failed AMER Intercompany generation for cleaned file %s: %s", output_path, exc)
 
+    apac_processing_result: dict[str, str | int] | None = None
     try:
-        generate_apac_processing_output(input_file_path=str(output_path))
+        apac_processing_result = generate_apac_processing_output(input_file_path=str(output_path))
     except Exception as exc:
         logger.warning("Failed APAC processing generation for cleaned file %s: %s", output_path, exc)
 
     try:
-        generate_emeaa_processing_output(input_file_path=str(output_path))
+        apac_gc_noncorp_file = (
+            str(apac_processing_result["apac_gc_noncrop_path"])
+            if apac_processing_result and apac_processing_result.get("apac_gc_noncrop_path")
+            else None
+        )
+        if apac_gc_noncorp_file:
+            generate_apac_gc_intewrcompany_output(input_file_path=apac_gc_noncorp_file)
+        else:
+            logger.warning("APAC GC NONCROP collection not found in APAC processing output")
     except Exception as exc:
-        logger.warning("Failed EMEAA processing generation for cleaned file %s: %s", output_path, exc)
+        logger.warning("Failed APAC GC Intercompany generation for cleaned file %s: %s", output_path, exc)
 
     try:
-        generate_rir_files_from_apac_output()
-    except Exception as exc:
-        logger.warning("Failed RIR file generation from APAC output for cleaned file %s: %s", output_path, exc)
-
-    try:
-        generate_gaf_apac_output(input_file_path=str(output_path))
+        rir_noncrop_file = (
+            str(apac_processing_result["rir_noncrop_path"])
+            if apac_processing_result and apac_processing_result.get("rir_noncrop_path")
+            else None
+        )
+        if rir_noncrop_file:
+            generate_gaf_apac_output(input_file_path=rir_noncrop_file)
+        else:
+            logger.warning("RIR NONCROP collection not found in APAC processing output")
     except Exception as exc:
         logger.warning("Failed GAF APAC generation for cleaned file %s: %s", output_path, exc)
 
     try:
-        generate_rir_apac_output(input_file_path=str(output_path))
+        rir_noncrop_file = (
+            str(apac_processing_result["rir_noncrop_path"])
+            if apac_processing_result and apac_processing_result.get("rir_noncrop_path")
+            else None
+        )
+        if rir_noncrop_file:
+            generate_rir_apac_output(input_file_path=rir_noncrop_file)
+        else:
+            logger.warning("RIR NONCROP collection not found in APAC processing output")
     except Exception as exc:
-        logger.warning("Failed RIR APAC generation for cleaned file %s: %s", output_path, exc)
+        logger.warning("Failed APAC_GC_RIR generation for cleaned file %s: %s", output_path, exc)
+
+    emeaa_processing_result: dict[str, str | int] | None = None
+    try:
+        emeaa_file = region_output_paths.get("EMEAA")
+        if emeaa_file:
+            emeaa_processing_result = generate_emeaa_processing_output(input_file_path=emeaa_file)
+        else:
+            logger.warning("EMEAA region file not found in region split output")
+    except Exception as exc:
+        logger.warning("Failed EMEAA processing generation for cleaned file %s: %s", output_path, exc)
+
+    try:
+        emeaa_v2_file = (
+            str(emeaa_processing_result["emeaa_v2_path"])
+            if emeaa_processing_result and emeaa_processing_result.get("emeaa_v2_path")
+            else None
+        )
+        if emeaa_v2_file:
+            generate_emeaa_intercompany_output(input_file_path=emeaa_v2_file)
+        else:
+            logger.warning("EMEAA_V2 collection not found in EMEAA processing output")
+    except Exception as exc:
+        logger.warning("Failed EMEAA Intercompany generation for cleaned file %s: %s", output_path, exc)
 
     try:
         generate_jrf_output(input_file_path=str(output_path))

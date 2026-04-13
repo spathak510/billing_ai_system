@@ -13,16 +13,64 @@ from app.config.settings import settings
 logger = logging.getLogger(__name__)
 
 
+def _default_output_name() -> str:
+    return f"GAF_GC_APAC_NON-CORP_{datetime.now().strftime('%B %Y')}"
+
+
 def _resolve_input_path(input_file_path: str | None) -> Path:
     if input_file_path:
         return Path(input_file_path)
 
-    output_dir = Path(settings.output_dir)
-    cleaned_files = sorted(output_dir.glob("cleaned_no_red_*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if cleaned_files:
-        return cleaned_files[0]
+    collection_dir = Path(settings.output_dir) / "APAC" / "APAC_Output"
+    collection_files = sorted(
+        collection_dir.glob("*_RIR_NONCROP.xlsx"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if collection_files:
+        return collection_files[0]
 
-    raise FileNotFoundError("No cleaned_no_red_*.xlsx file found in output folder.")
+    legacy_cleaned_files = sorted(
+        Path(settings.output_dir).glob("cleaned_no_red_*.xlsx"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if legacy_cleaned_files:
+        return legacy_cleaned_files[0]
+
+    raise FileNotFoundError("No *_RIR_NONCROP.xlsx file found in output/APAC/APAC_Output.")
+
+
+def _resolve_template_path(template_path: str | None) -> Path:
+    if template_path:
+        resolved = Path(template_path)
+        if not resolved.exists():
+            raise FileNotFoundError(f"Template file not found: {resolved}")
+        return resolved
+
+    output_root = Path(settings.output_dir)
+    template_dirs = [
+        output_root / "APAC" / "GAF_APAC_Processor" / "Template_Format",
+        output_root / "APAC" / "GAF_APAC_Processor" / "Template_Formate",
+        output_root / "APAC" / "GAF_APAC_Processor" / "Template_formate",
+    ]
+    for template_dir in template_dirs:
+        preferred_template = template_dir / "GAF_GC_APAC_NON-CORP_JANUARY26(updated).xlsx"
+        if preferred_template.exists():
+            return preferred_template
+
+        template_files = sorted(template_dir.glob("*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if template_files:
+            return template_files[0]
+
+    legacy_template_dir = output_root / "GAF_APAC_PROCESSER"
+    legacy_templates = sorted(legacy_template_dir.glob("*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if legacy_templates:
+        return legacy_templates[0]
+
+    raise FileNotFoundError(
+        "GAF APAC template not found in output/APAC/GAF_APAC_Processor/Template_Format."
+    )
 
 
 def _find_col(columns: list[str], candidates: list[str]) -> str | None:
@@ -60,18 +108,20 @@ def _set_cell_value_safe(ws, cell_ref: str, value: object) -> None:
 
 def generate_gaf_apac_output(
     input_file_path: str | None = None,
+    template_path: str | None = None,
+    output_folder_path: str | None = None,
     submitted_by: str = "",
-    output_file_name: str = "GAF_GC_APAC_NON-CORP",
+    output_file_name: str | None = None,
 ) -> dict[str, str | int | float]:
-    """Generate GAF APAC workbook from cleaned data using the provided template format."""
+    """Generate GAF APAC workbook from APAC RIR NONCROP collection data."""
     source_path = _resolve_input_path(input_file_path)
+    resolved_template = _resolve_template_path(template_path)
     df = pd.read_excel(source_path, sheet_name=0)
 
     cols = list(df.columns)
     bu_col = _find_col(cols, ["BU"])
     currency_col = _find_col(cols, ["CURRENCYCODE", "CURRENCY CODE", "CURRENCY"])
     amount_col = _find_col(cols, ["AMOUNT", "BILL_AMOUNT", "BILLING_AMOUNT", "TOTAL_AMOUNT", "NET_AMOUNT", "VALUE"])
-    user_type_col = _find_col(cols, ["USER_TYPE", "USER TYPE", "TYPE", "CATEGORY"])
 
     holidex_col = _find_col(cols, ["HOLIDEX", "CUSTID", "CUSTID #"])
     course_col = _find_col(cols, ["COURSE_NAME", "COURSE NAME", "DESCRIPTION"])
@@ -79,14 +129,13 @@ def generate_gaf_apac_output(
     offering_date_col = _find_col(cols, ["OFFERING_DATE", "OFFERING DATE"])
     employee_col = _find_col(cols, ["EMPLOYEE", "LEARNERS NAME", "LEARNER", "USERNAME"])
 
-    if not bu_col or not currency_col or not amount_col or not user_type_col:
+    if not bu_col or not currency_col or not amount_col:
         missing = [
             key
             for key, value in {
                 "BU": bu_col,
                 "CURRENCYCODE": currency_col,
                 "AMOUNT": amount_col,
-                "USER_TYPE": user_type_col,
             }.items()
             if value is None
         ]
@@ -98,40 +147,16 @@ def generate_gaf_apac_output(
             apply_revenue_col = col
             break
 
-    gaf_rows: list[dict[str, object]] = []
+    gaf_rows: list[dict[str, object]] = df.to_dict(orient="records")
 
-    for _, row in df.iterrows():
-        bu = str(row.get(bu_col, "")).strip().upper()
-        user_type = str(row.get(user_type_col, "")).strip().upper()
-        currency = str(row.get(currency_col, "")).strip().upper()
-        amount = _to_decimal(row.get(amount_col, "0"))
-
-        if bu.startswith("H") or bu.startswith("A"):
-            continue
-        if not bu.startswith("P"):
-            continue
-
-        if currency == "EUR":
-            amount = amount / Decimal("0.86")
-            currency = "USD"
-
-        if currency not in {"USD", "CNY"}:
-            continue
-
-        if amount < 0 and user_type != "C":
-            row_dict = row.to_dict()
-            row_dict[amount_col] = float(amount)
-            row_dict[currency_col] = currency
-            gaf_rows.append(row_dict)
-
-    output_root = Path(settings.output_dir) / "GAF_APAC_PROCESSER"
+    output_root = (
+        Path(output_folder_path)
+        if output_folder_path
+        else Path(settings.output_dir) / "APAC" / "GAF_APAC_Processor" / "Output"
+    )
     output_root.mkdir(parents=True, exist_ok=True)
 
-    template_path = output_root / "GAF_GC_APAC_NON-CORP_JANUARY26(updated).xlsx"
-    if not template_path.exists():
-        raise FileNotFoundError(f"GAF APAC template not found: {template_path}")
-
-    workbook = load_workbook(template_path)
+    workbook = load_workbook(resolved_template)
     if "upload sheet" not in workbook.sheetnames or "GAF" not in workbook.sheetnames:
         raise ValueError("Template must contain 'upload sheet' and 'GAF' sheets")
 
@@ -179,8 +204,14 @@ def generate_gaf_apac_output(
 
     _set_cell_value_safe(upload_sheet, "I5", record_count)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_path = output_root / f"{output_file_name}_{timestamp}.xlsx"
+    final_file_name = (output_file_name or _default_output_name()).strip()
+    if not final_file_name.lower().endswith(".xlsx"):
+        final_file_name += ".xlsx"
+    output_path = output_root / final_file_name
+
+    if output_path.exists():
+        output_path.unlink()
+
     workbook.save(output_path)
 
     logger.info("Generated GAF APAC output: %s", output_path)
@@ -188,4 +219,6 @@ def generate_gaf_apac_output(
         "gaf_apac_output_path": str(output_path),
         "gaf_apac_records": record_count,
         "gaf_apac_total": float(total),
+        "template_file": str(resolved_template),
+        "source_file": str(source_path),
     }

@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 import logging
 import os
+import threading
+import time
 
 from flask import Flask, jsonify, request, send_file
 from werkzeug.exceptions import HTTPException
@@ -12,13 +14,21 @@ from werkzeug.exceptions import HTTPException
 from app.config.settings import settings
 from app.agents.mail_reader_agent import MailReaderAgent
 from app.services.billing_service import process_billing_file
+from app.services.cleanup_service import cleanup_all_outputs, cleanup_specific_folder
 from app.services.excel_filter_service import remove_red_rows_from_excel
 from app.services.peoplesoft_output_service import generate_amer_peoplesoft_output
 from app.services.sharepoint_download_service import SharePointDownloadClient
 from app.services.sharepoint_move_service import SharePointMoveClient
 from app.services.sharepoint_upload_service import SharePointUploadClient
+from app.api.sharepoint_processor import sharepoint_download, sharepoint_upload
+from app.agents.cleaning_agent import cleaning_data_prosessing
+from app.services.ihg_servicenow_ticket_service import create_ticket_service_now
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_REMOVE_RED_FILENAME = (
+    "2026.02 Global Corp & Non-Corp February 2026 - Learning Updated 2026.02.18.xlsx"
+)
 
 mail_agent = MailReaderAgent()
 
@@ -274,8 +284,8 @@ def register_api_routes(app: Flask) -> None:
         if isinstance(from_address, str):
             from_address = from_address.strip()
 
-        recipient_name = data.get("recipient_name") or "Team"
-        message = data.get("message") or ""
+        recipient_name = data['template_variables'].get("recipient_name") or "Team"
+        message = data['template_variables'].get("message") or ""
         body = data.get("body")
         body_type = (data.get("body_type") or "text").lower()
         template_name = data.get("template_name")
@@ -331,11 +341,20 @@ def register_api_routes(app: Flask) -> None:
         data = request.get_json(force=True, silent=True) or {}
         filename = data.get("filename")
 
-        if not filename or not isinstance(filename, str):
-            return jsonify({"error": "'filename' is required and must be a string."}), 400
+        if filename is not None and not isinstance(filename, str):
+            return jsonify({"error": "'filename' must be a string when provided."}), 400
 
-        safe_name = os.path.basename(filename)
-        source_path = os.path.join(settings.upload_dir, safe_name)
+        if filename and filename.strip():
+            safe_name = os.path.basename(filename.strip())
+            source_path = os.path.join(settings.upload_dir, safe_name)
+        else:
+            source_path = os.path.join(
+                settings.upload_dir,
+                "Post_validation_data",
+                DEFAULT_REMOVE_RED_FILENAME,
+            )
+            safe_name = os.path.basename(source_path)
+
         if not os.path.isfile(source_path):
             return jsonify({"error": f"File not found in data folder: {safe_name}"}), 404
 
@@ -438,10 +457,34 @@ def register_api_routes(app: Flask) -> None:
         local_dir = settings.upload_dir
 
         try:
-            downloaded_files = _get_sharepoint_download_client().download_all_files(remote_path, local_dir)
+            downloaded_files = sharepoint_download()
         except Exception as exc:
             logger.error("sharepoint_download_api failed: %s", exc)
             return jsonify({"error": str(exc)}), 500
+        
+        thread1 = threading.Thread(target=cleaning_data_prosessing, args=())
+        thread1.start()
+        
+        time.sleep(5)  # Add delay to ensure files are fully written to disk before responding 
+        thread2 = threading.Thread(target=sharepoint_upload, args=(remote_path, local_dir))
+        thread2.start()
+
+        time.sleep(15)  # Add delay to allow upload to start before responding 
+        pyaload = {
+            "requested_by": "AMER\\USM3PA",
+            "requested_for": "AMER\\USM3PA",
+            "location": "ATLR3",
+            "situation": "Merge profiles",
+            "business_service": "IHG University",
+            "service_category": "Application Support",
+            "assignment_group": "IY-GLBL-LMS Support Accenture",
+            "short_description": "LMS billing",
+            "description": "LMS billing",
+            "internal_notes": "",
+            "source": "RCC Tech Intake Form"
+        } 
+        thread3 = threading.Thread(target=create_ticket_service_now, args=(pyaload,))
+        thread3.start()
 
         return (
             jsonify(
@@ -576,3 +619,102 @@ def register_api_routes(app: Flask) -> None:
             ),
             200,
         )
+
+    @app.post("/api/v1/cleanup/all")
+    def cleanup_all_api():
+        """Remove all flow output files and cleanup generated files from data folder.
+
+        This endpoint recursively deletes:
+        - ALL files in output/ folder (preserves folder structure & templates)
+        - cleaned_no_red_*.xlsx files from data/ folder (preserves original inputs)
+
+        Preserves:
+        - Folder structure (directories are not deleted, only contents)
+        - Template files (files/folders containing 'template' in the name)
+        - Original input files in data/ folder (only removes generated cleanup files)
+
+        Request JSON body (optional)::
+
+            {
+                "confirm": true  # Safe to omit - just call the endpoint
+            }
+
+        Response::
+
+            {
+                "status": "success",
+                "message": "Cleanup completed successfully (output/ and data/cleaned files removed)",
+                "files_deleted": 125,
+                "folders_scanned": 45,
+                "size_freed_mb": 156.34,
+                "locations_cleaned": ["output", "data"],
+                "removed_paths": [
+                    "output/AMER_Intercompny/Output/AMER_Intercompany billing lines_April 2026.xlsx",
+                    "output/APAC/APAC_Output/APAC Processing_APAC_GC_CROP.xlsx",
+                    "data/cleaned_no_red_2026.02 Global Corp & Non-Corp February 2026 - Learning Updated 2026.02.18.xlsx",
+                    ...
+                ]
+            }
+        """
+        try:
+            result = cleanup_all_outputs()
+        except Exception as exc:
+            logger.error("cleanup_all_api failed: %s", exc)
+            return jsonify({"error": str(exc), "status": "error"}), 500
+
+        status_code = 200 if result.get("status") == "success" else 500
+        return jsonify(result), status_code
+
+    @app.post("/api/v1/cleanup/folder")
+    def cleanup_folder_api():
+        """Remove all files from a specific output subfolder.
+
+        Preserves template files within the folder.
+
+        Request JSON body::
+
+            {
+                "folder_name": "AMER_Intercompny"  # required: subfolder in output/
+            }
+
+        Supported folder names:
+        - AMER_Intercompny
+        - APAC
+        - EMEAA
+        - Region_Wise_Split
+        - GAF_APAC_PROCESSER
+        - JRF
+        - Monthly_cleaned_report
+        - RIR_APAC
+
+        Response::
+
+            {
+                "status": "success",
+                "message": "Cleanup completed for folder 'AMER_Intercompny'",
+                "files_deleted": 15,
+                "size_freed_mb": 12.45,
+                "removed_paths": [
+                    "AMER_Intercompny/Output/AMER_Intercompany billing lines_April 2026.xlsx"
+                ]
+            }
+        """
+        data = request.get_json(force=True, silent=True) or {}
+        folder_name = data.get("folder_name")
+
+        if not folder_name or not isinstance(folder_name, str):
+            return jsonify(
+                {
+                    "error": "'folder_name' is required and must be a string.",
+                    "status": "error",
+                }
+            ), 400
+
+        try:
+            result = cleanup_specific_folder(folder_name.strip())
+        except Exception as exc:
+            logger.error("cleanup_folder_api failed for folder '%s': %s", folder_name, exc)
+            return jsonify({"error": str(exc), "status": "error"}), 500
+
+        status_code = 200 if result.get("status") == "success" else 500
+        return jsonify(result), status_code

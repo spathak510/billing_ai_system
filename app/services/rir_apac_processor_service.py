@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -14,7 +13,6 @@ from app.config.settings import settings
 logger = logging.getLogger(__name__)
 
 _RIR_REQUIRED_SHEETS = ("upload sheet", "Recharge Form")
-_TIMESTAMPED_OUTPUT_PATTERN = re.compile(r"_\d{8}_\d{6}\.xlsx$", re.IGNORECASE)
 
 
 def _resolve_input_path(input_file_path: str | None) -> Path:
@@ -22,14 +20,24 @@ def _resolve_input_path(input_file_path: str | None) -> Path:
     if input_file_path:
         return Path(input_file_path)
 
-    output_dir = Path(settings.output_dir)
-    cleaned_files = sorted(
-        output_dir.glob("cleaned_no_red_*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True
+    collection_dir = Path(settings.output_dir) / "APAC" / "APAC_Output"
+    collection_files = sorted(
+        collection_dir.glob("*_RIR_NONCROP.xlsx"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
     )
-    if cleaned_files:
-        return cleaned_files[0]
+    if collection_files:
+        return collection_files[0]
 
-    raise FileNotFoundError("No cleaned_no_red_*.xlsx file found in output folder.")
+    legacy_cleaned_files = sorted(
+        Path(settings.output_dir).glob("cleaned_no_red_*.xlsx"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if legacy_cleaned_files:
+        return legacy_cleaned_files[0]
+
+    raise FileNotFoundError("No *_RIR_NONCROP.xlsx file found in output/APAC/APAC_Output.")
 
 
 def _find_col(columns: list[str], candidates: list[str]) -> str | None:
@@ -68,63 +76,34 @@ def _set_cell_value_safe(ws, cell_ref: str, value: object) -> None:
     ws[cell_ref].value = value
 
 
-def _is_generated_rir_output(path: Path) -> bool:
-    """Return True when filename matches generated RIR output timestamp pattern."""
-    return bool(_TIMESTAMPED_OUTPUT_PATTERN.search(path.name))
+def _resolve_template_path(template_path: str | None) -> Path:
+    if template_path:
+        resolved = Path(template_path)
+        if not resolved.exists():
+            raise FileNotFoundError(f"Template file not found: {resolved}")
+        return resolved
 
+    template_dir = Path(settings.output_dir) / "APAC" / "APAC_GC_RIR" / "Template_Formate"
+    preferred_template = template_dir / "RIR_GC_APAC_NON-CORP_FEBRUARY26.xlsx"
+    if preferred_template.exists():
+        return preferred_template
 
-def _resolve_template_path(output_root: Path) -> Path:
-    """Find a valid RIR template workbook.
+    template_files = sorted(template_dir.glob("*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if template_files:
+        return template_files[0]
 
-    The folder can contain both templates and previously generated outputs.
-    We only accept workbooks that contain the required sheets and prefer
-    non-generated template files over timestamped output files.
-    """
-    template_candidates = sorted(
-        output_root.glob("RIR_*.xlsx"),
-        key=lambda path: (_is_generated_rir_output(path), path.stat().st_mtime),
-    )
-    if not template_candidates:
-        raise FileNotFoundError(
-            f"RIR APAC template not found in {output_root}. "
-            f"Please place a template file named 'RIR_*.xlsx' in the output/RIR_APAC directory."
-        )
+    legacy_dir = Path(settings.output_dir) / "APAC" / "APAC_GC_RIR"
+    legacy_templates = sorted(legacy_dir.glob("*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if legacy_templates:
+        return legacy_templates[0]
 
-    for candidate in template_candidates:
-        try:
-            workbook = load_workbook(candidate, read_only=True)
-        except Exception as exc:
-            logger.warning("Skipping RIR candidate %s: failed to open workbook (%s)", candidate, exc)
-            continue
-
-        missing_sheets = [sheet for sheet in _RIR_REQUIRED_SHEETS if sheet not in workbook.sheetnames]
-        extra_sheets = [sheet for sheet in workbook.sheetnames if sheet not in _RIR_REQUIRED_SHEETS]
-        workbook.close()
-
-        if missing_sheets:
-            logger.warning(
-                "Skipping RIR candidate %s: missing required sheets %s",
-                candidate,
-                ", ".join(missing_sheets),
-            )
-            continue
-
-        if extra_sheets:
-            logger.info(
-                "RIR template %s contains extra sheets that will be ignored: %s",
-                candidate,
-                ", ".join(extra_sheets),
-            )
-
-        return candidate
-
-    raise ValueError(
-        "No valid RIR template found. The workbook must contain both 'upload sheet' and 'Recharge Form'."
-    )
+    raise FileNotFoundError("RIR APAC template not found in output/APAC/APAC_GC_RIR/Template_Formate.")
 
 
 def generate_rir_apac_output(
     input_file_path: str | None = None,
+    template_path: str | None = None,
+    output_folder_path: str | None = None,
     submitted_by: str = "",
     output_file_name: str = "RIR_GC_APAC_NON-CORP",
 ) -> dict[str, str | int | float]:
@@ -194,15 +173,19 @@ def generate_rir_apac_output(
         rir_rows.append(row_dict)
 
     # Find or create output directory
-    output_root = Path(settings.output_dir) / "RIR_APAC"
+    output_root = (
+        Path(output_folder_path)
+        if output_folder_path
+        else Path(settings.output_dir) / "APAC" / "APAC_GC_RIR" / "Output"
+    )
     output_root.mkdir(parents=True, exist_ok=True)
 
-    # Load a valid template workbook from the RIR folder.
-    template_path = _resolve_template_path(output_root)
+    # Load template workbook from APAC_GC_RIR template folder.
+    resolved_template_path = _resolve_template_path(template_path)
     
-    logger.info("Using RIR APAC template: %s", template_path)
+    logger.info("Using RIR APAC template: %s", resolved_template_path)
 
-    workbook = load_workbook(template_path)
+    workbook = load_workbook(resolved_template_path)
     
     # Verify required sheets exist
     if "upload sheet" not in workbook.sheetnames:
@@ -214,7 +197,7 @@ def generate_rir_apac_output(
     if extra_sheets:
         logger.info(
             "Ignoring extra sheets in RIR workbook %s: %s",
-            template_path,
+            resolved_template_path,
             ", ".join(extra_sheets),
         )
 
@@ -277,9 +260,15 @@ def generate_rir_apac_output(
     # Set totals in recharge form (I33)
     _set_cell_value_safe(recharge_sheet, "I33", float(total))
 
-    # Save the workbook with timestamp
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_path = output_root / f"{output_file_name}_{timestamp}.xlsx"
+    # Save with fixed output name (overwrite existing file), matching VBO behavior.
+    final_file_name = output_file_name.strip()
+    if not final_file_name.lower().endswith(".xlsx"):
+        final_file_name += ".xlsx"
+    output_path = output_root / final_file_name
+
+    if output_path.exists():
+        output_path.unlink()
+
     workbook.save(output_path)
 
     logger.info("Generated RIR APAC output: %s (records: %d, total: %.2f)", output_path, record_count, float(total))
@@ -287,4 +276,6 @@ def generate_rir_apac_output(
         "rir_apac_output_path": str(output_path),
         "rir_apac_records": record_count,
         "rir_apac_total": float(total),
+        "template_file": str(resolved_template_path),
+        "source_file": str(source_path),
     }

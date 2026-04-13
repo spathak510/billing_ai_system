@@ -49,10 +49,43 @@ def _to_decimal(value: object) -> Decimal:
         return Decimal("0")
 
 
+def _set_cell_value_safe(ws, cell_ref: str, value: object) -> None:
+    cell = ws[cell_ref]
+    if cell.__class__.__name__ != "MergedCell":
+        cell.value = value
+        return
+
+    for merged_range in ws.merged_cells.ranges:
+        if cell_ref in merged_range:
+            ws.cell(row=merged_range.min_row, column=merged_range.min_col).value = value
+            return
+
+    ws[cell_ref].value = value
+
+
+def _resolve_template_path() -> Path:
+    output_root = Path(settings.output_dir) / "JRF"
+    template_dirs = [
+        output_root / "Template_Formate",
+        output_root / "Template_Format",
+        output_root,
+    ]
+
+    for template_dir in template_dirs:
+        template_candidates = sorted(template_dir.glob("*.xlsm"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if template_candidates:
+            return template_candidates[0]
+
+    raise FileNotFoundError(
+        f"JRF template (.xlsm) not found in {output_root / 'Template_Formate'} or {output_root}. "
+        f"Please place a template file in output/JRF/Template_Formate."
+    )
+
+
 def generate_jrf_output(
     input_file_path: str | None = None,
     requester_name: str = "",
-    sheet_name: str = "Sheet1",
+    sheet_name: str = "Journal Template",
 ) -> dict[str, str | int]:
     """Generate JRF (Journal Reference File) workbook from cleaned data using template format.
     
@@ -96,39 +129,42 @@ def generate_jrf_output(
         raise ValueError(f"Missing required columns for JRF processing: {', '.join(missing)}")
 
     # Find or create output directory
-    output_root = Path(settings.output_dir) / "JRF"
+    output_root = Path(settings.output_dir) / "JRF" / "Output"
     output_root.mkdir(parents=True, exist_ok=True)
 
-    # Load template - look for .xlsm file
-    template_candidates = list(output_root.glob("*.xlsm"))
-    if not template_candidates:
-        raise FileNotFoundError(
-            f"JRF template (.xlsm) not found in {output_root}. "
-            f"Please place a template file in the output/JRF directory."
-        )
-
-    # Use the first template found (typically the most recent or the only one)
-    template_path = template_candidates[0]
+    # Load template from Template_Formate (with compatibility fallbacks)
+    template_path = _resolve_template_path()
     
     logger.info("Using JRF template: %s", template_path)
 
     workbook = load_workbook(template_path)
     
-    # Verify sheet exists
-    if sheet_name not in workbook.sheetnames:
-        available_sheets = ", ".join(workbook.sheetnames)
-        raise ValueError(
-            f"Sheet '{sheet_name}' not found in template. Available sheets: {available_sheets}"
-        )
+    # Verify sheet exists with robust fallbacks for common template sheet names.
+    target_sheet = sheet_name
+    if target_sheet not in workbook.sheetnames:
+        for candidate in ("Journal Template", "JRF", "Sheet1"):
+            if candidate in workbook.sheetnames:
+                target_sheet = candidate
+                logger.warning(
+                    "Requested JRF sheet '%s' not found; using '%s' instead.",
+                    sheet_name,
+                    target_sheet,
+                )
+                break
+        else:
+            available_sheets = ", ".join(workbook.sheetnames)
+            raise ValueError(
+                f"Sheet '{sheet_name}' not found in template. Available sheets: {available_sheets}"
+            )
 
-    ws = workbook[sheet_name]
+    ws = workbook[target_sheet]
 
     # Set header information
     current_dt = datetime.now()
     date_str = f"{current_dt.month:02d}/{current_dt.day:02d}/{current_dt.year}"
     
-    ws["B5"].value = date_str
-    ws["B11"].value = requester_name
+    _set_cell_value_safe(ws, "B5", date_str)
+    _set_cell_value_safe(ws, "B11", requester_name)
 
     # Find and clear old data rows (rows 16 onwards)
     max_row = ws.max_row
