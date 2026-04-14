@@ -133,6 +133,28 @@ def _normalize_email_attachments(raw_attachments) -> list[dict] | None:
     return normalized_attachments
 
 
+def _extract_incident_id(servicenow_result: dict | None) -> str | None:
+    """Extract incident id from ServiceNow create ticket response payload."""
+    if not isinstance(servicenow_result, dict):
+        return None
+
+    response_body = servicenow_result.get("response")
+    if isinstance(response_body, dict):
+        for key in ("incident_id", "incidentId", "incidentID", "number", "ticket_id", "ticketId"):
+            value = response_body.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+        result_payload = response_body.get("result")
+        if isinstance(result_payload, dict):
+            for key in ("incident_id", "incidentId", "incidentID", "number", "ticket_id", "ticketId"):
+                value = result_payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+
+    return None
+
+
 def register_api_routes(app: Flask) -> None:
     """Register all API routes to the Flask app.
 
@@ -502,12 +524,45 @@ def register_api_routes(app: Flask) -> None:
         except Exception as exc:
             logger.warning("Failed to upload post validation data file: %s", exc)
 
+        time.sleep(15)  # Add delay to allow upload to start before responding 
+        payload = {
+            "requested_by": "AMER\\USM3PA",
+            "requested_for": "AMER\\USM3PA",
+            "location": "ATLR3",
+            "situation": "other [incident]",
+            "business_service": "IHG University",
+            "service_category": "Application Support",
+            "assignment_group": "IY-GLBL-LMS Support Accenture",
+            "short_description": "LMS Monthly Billing Process - PS Upload",
+            "description": "LMS Monthly Billing Process - PS Upload",
+            "internal_notes": "",
+            "source": "RCC Tech Intake Form"
+        }
+        service_now_result: dict | None = None
+        incident_id: str | None = None
+        try:
+            service_now_result = create_ticket_service_now(payload)
+            incident_id = _extract_incident_id(service_now_result)
+        except Exception as exc:
+            logger.warning("Failed to create ServiceNow ticket: %s", exc)
+
+        try:
+            post_validation_send_email()
+        except Exception as exc:
+            logger.warning("Failed to send post validation emails: %s", exc)  
+
+
+
         return (
             jsonify(
                 {
                     "status": "ok",
                     "source_file": source_path,
                     "cleaned_file": cleaned_path,
+                    "incident_id": incident_id,
+                    "servicenow_status_code": (
+                        service_now_result.get("status_code") if isinstance(service_now_result, dict) else None
+                    ),
                 }
             ),
             200,
@@ -580,38 +635,49 @@ def register_api_routes(app: Flask) -> None:
         No request body is required. Files are downloaded from the configured
         SharePoint folder into the local data directory.
         """
-        remote_path = settings.sharepoint_download_root_path.rstrip("/")
-        local_dir = settings.upload_dir
+        base_remote_path = "/Monthly Billing Clean Data/".rstrip("/")  # Ensure no trailing slash
+        local_dir = settings.output_dir
 
         try:
+            print("Sharepoint download flow Initiated...............................")  
             downloaded_files = sharepoint_download()
+            print("Sharepoint download flow Completed...............................")
         except Exception as exc:
             logger.error("sharepoint_download_api failed: %s", exc)
             return jsonify({"error": str(exc)}), 500
         
+        
         thread1 = threading.Thread(target=cleaning_data_prosessing, args=())
         thread1.start()
         
-        time.sleep(5)  # Add delay to ensure files are fully written to disk before responding 
+        
+        time.sleep(5)  # Add delay to ensure files are fully written to disk before responding
+        month_folder = datetime.now().strftime("%B_%Y")
+
+        remote_path = f"{base_remote_path}/{month_folder}"
+        local_dir = local_dir+"/Monthly_cleaned_report"
         thread2 = threading.Thread(target=sharepoint_upload, args=(remote_path, local_dir))
         thread2.start()
+        
 
         time.sleep(15)  # Add delay to allow upload to start before responding 
         pyaload = {
             "requested_by": "AMER\\USM3PA",
             "requested_for": "AMER\\USM3PA",
             "location": "ATLR3",
-            "situation": "Merge profiles",
+            "situation": "other [incident]",
             "business_service": "IHG University",
             "service_category": "Application Support",
             "assignment_group": "IY-GLBL-LMS Support Accenture",
-            "short_description": "LMS billing",
-            "description": "LMS billing",
+            "short_description": "LMS Monthly Billing Process - MyID Data Retrieve",
+            "description": "LMS Monthly Billing Process - MyID Data Retrieve",
             "internal_notes": "",
             "source": "RCC Tech Intake Form"
         } 
+        
         thread3 = threading.Thread(target=create_ticket_service_now, args=(pyaload,))
         thread3.start()
+        
 
         return (
             jsonify(
@@ -689,7 +755,7 @@ def register_api_routes(app: Flask) -> None:
         )
     
     @app.post("/api/v1/sharepoint/upload/validation_records")
-    def sharepoint_upload_post_validation_record_api():
+    def vsharepoint_upload_post_validation_record_api():
         """Upload a local file to SharePoint.
 
         Request JSON body::
