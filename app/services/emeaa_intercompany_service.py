@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import calendar
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -44,12 +43,6 @@ def _resolve_template_path(template_path: str | None) -> Path:
     raise FileNotFoundError(
         "EMEAA Intercompany template not found in output/EMEAA/EMEAA_Intercompany/Template_Formate."
     )
-
-
-def _default_output_name() -> str:
-    month = calendar.month_name[datetime.now().month]
-    year = datetime.now().year
-    return f"EMEAA_Intercompany billing lines_{month} {year}.xlsx"
 
 
 def _value_from_row(row_dict: dict[str, object], column_name: str) -> object:
@@ -96,9 +89,10 @@ def generate_emeaa_intercompany_output(
     )
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    final_file_name = (base_file_name or _default_output_name()).strip()
-    if not final_file_name.lower().endswith(".xlsx"):
-        final_file_name += ".xlsx"
+    output_base_name = (base_file_name or "EMEAA_Intercompany billing lines").strip()
+    if output_base_name.lower().endswith(".xlsx"):
+        output_base_name = output_base_name[:-5]
+    final_file_name = f"{output_base_name}_{datetime.now().strftime('%B %Y')}.xlsx"
     output_path = target_dir / final_file_name
 
     df = pd.read_excel(source_path, sheet_name=0)

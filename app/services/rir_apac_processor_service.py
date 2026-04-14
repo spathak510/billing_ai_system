@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+import calendar
 
 import pandas as pd
 from openpyxl import load_workbook
@@ -261,9 +262,11 @@ def generate_rir_apac_output(
     _set_cell_value_safe(recharge_sheet, "I33", float(total))
 
     # Save with fixed output name (overwrite existing file), matching VBO behavior.
-    final_file_name = output_file_name.strip()
-    if not final_file_name.lower().endswith(".xlsx"):
-        final_file_name += ".xlsx"
+    base_name = output_file_name.strip() or "RIR_GC_APAC_NON-CORP"
+    if base_name.lower().endswith(".xlsx"):
+        base_name = base_name[:-5]
+
+    final_file_name = f"{base_name}_{current_dt.strftime('%B %Y')}.xlsx"
     output_path = output_root / final_file_name
 
     if output_path.exists():
