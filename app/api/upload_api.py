@@ -374,6 +374,23 @@ def register_api_routes(app: Flask) -> None:
         except Exception as exc:
             logger.error("remove_red_rows_api failed: %s", exc)
             return jsonify({"error": str(exc)}), 500
+        
+        upload_result = None
+        try:
+            upload_result = sharepoint_upload_post_validation_record_api()
+            if isinstance(upload_result, tuple) and len(upload_result) >= 2:
+                status_code = upload_result[1]
+                if isinstance(status_code, int) and status_code >= 400:
+                    logger.warning(
+                        "Post validation SharePoint upload returned non-success status: %s",
+                        status_code,
+                    )
+                else:
+                    logger.info("Uploaded all output files to SharePoint")
+            else:
+                logger.info("Uploaded all output files to SharePoint")
+        except Exception as exc:
+            logger.warning("Failed to upload post validation data file: %s", exc)
 
         return (
             jsonify(
@@ -560,6 +577,80 @@ def register_api_routes(app: Flask) -> None:
             ),
             200,
         )
+    
+    @app.post("/api/v1/sharepoint/upload/validation_records")
+    def sharepoint_upload_post_validation_record_api():
+        """Upload a local file to SharePoint.
+
+        Request JSON body::
+
+            {
+                "remote_path": "reports/2026/output.xlsx",
+                "local_file_path": "output/output.xlsx",  # optional
+                "filename": "output.xlsx",                # optional alternative
+                "overwrite": true                           # optional
+            }
+        """
+        remote_path = settings.sharepoint_download_root_path.rstrip("/") + "/Output"
+        local_dir = settings.output_dir
+        month_folder = datetime.now().strftime("%B_%Y")
+
+        # Mapping: SharePoint destination folder -> local output subfolder
+        upload_targets = {
+            "AMER PeopleSoft": os.path.join("AMER", "AMER_Output"),
+            "AMER_InterCompany": os.path.join("AMER_Intercompny", "Output"),
+            "APAC_GC Intercompany": os.path.join("APAC", "APAC_Intercompny", "Output"),
+            "APAC_GC_GAF": os.path.join("APAC", "GAF_APAC_Processor", "Output"),
+            "APAC_GC_RIR": os.path.join("APAC", "APAC_GC_RIR", "Output"),
+            "EMEAA_Intercompany": os.path.join("EMEAA", "EMEAA_Intercompany", "Output"),
+            "Standard_Journal": os.path.join("JRF", "Output"),
+        }
+
+        try:
+            count = 0
+            skipped_directories: list[str] = []
+            used_remote_month_paths: list[str] = []
+            upload_client = _get_sharepoint_upload_client()
+
+            for remote_folder, local_subdir in upload_targets.items():
+                exact_remote_path = f"{remote_path}/{remote_folder}/{month_folder}"
+                local_target_dir = os.path.join(local_dir, local_subdir)
+
+                if not os.path.isdir(local_target_dir):
+                    skipped_directories.append(local_target_dir)
+                    logger.warning("Skipping missing output folder: %s", local_target_dir)
+                    continue
+
+                used_remote_month_paths.append(exact_remote_path)
+
+                for file_name in os.listdir(local_target_dir):
+                    file_path = os.path.join(local_target_dir, file_name)
+                    if not os.path.isfile(file_path):
+                        continue
+                    remote_file_path = f"{exact_remote_path}/{file_name}"
+                    upload_client.upload_file(file_path, remote_file_path, overwrite=True)
+                    count += 1
+
+        except Exception as exc:
+            logger.error("sharepoint_download_api failed: %s", exc)
+            return jsonify({"error": str(exc)}), 500
+        
+        
+
+        return (
+            jsonify(
+                {
+                    "status": "ok",
+                    "remote_path": remote_path,
+                    "month_folder": month_folder,
+                    "Total_upload_file": count,
+                    "skipped_directories": skipped_directories,
+                    "used_remote_month_paths": used_remote_month_paths,
+                }
+            ),
+            200,
+        )
+
 
     @app.post("/api/v1/sharepoint/move")
     def sharepoint_move_api():
