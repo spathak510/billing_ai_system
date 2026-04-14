@@ -307,8 +307,11 @@ def generate_apac_gc_intewrcompany_output(
     rir_sheet = wb["RIR"]
     billing_sheet = wb["BILLING LINES"]
 
+    default_request_name = "GenWizard_Automation"
+    rir_name_value = request_name.strip() if isinstance(request_name, str) and request_name.strip() else default_request_name
+
     _set_cell_value_safe(rir_sheet, "F10", request_date or datetime.now().strftime("%Y-%m-%d"))
-    _set_cell_value_safe(rir_sheet, "P10", request_name)
+    _set_cell_value_safe(rir_sheet, "P10", rir_name_value)
     _set_cell_value_safe(rir_sheet, "F11", account_number)
 
     _clear_billing_lines(billing_sheet)

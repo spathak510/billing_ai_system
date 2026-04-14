@@ -331,15 +331,15 @@ def remove_red_rows_from_excel(
         logger.warning("Failed APAC GC Intercompany generation for cleaned file %s: %s", output_path, exc)
 
     try:
-        rir_noncrop_file = (
-            str(apac_processing_result["rir_noncrop_path"])
-            if apac_processing_result and apac_processing_result.get("rir_noncrop_path")
+        gaf_noncrop_file = (
+            str(apac_processing_result["gaf_noncrop_path"])
+            if apac_processing_result and apac_processing_result.get("gaf_noncrop_path")
             else None
         )
-        if rir_noncrop_file:
-            generate_gaf_apac_output(input_file_path=rir_noncrop_file)
+        if gaf_noncrop_file:
+            generate_gaf_apac_output(input_file_path=gaf_noncrop_file)
         else:
-            logger.warning("RIR NONCROP collection not found in APAC processing output")
+            logger.warning("GAF NONCROP collection not found in APAC processing output")
     except Exception as exc:
         logger.warning("Failed GAF APAC generation for cleaned file %s: %s", output_path, exc)
 

@@ -23,6 +23,20 @@ class Settings(BaseSettings):
     anomaly_threshold: float = 0.85
     enable_ai_validation: bool = True
 
+    # Mail processor defaults
+    amea_europe_mail_from: str = "sa_gwz.gapi@ihg.onmicrosoft.com"
+    amea_europe_mail_to: list[str] = ["sono.pathak2@ihg.com"]
+    amea_europe_mail_cc: list[str] = []
+    amea_europe_mail_subject: str = "AMEA and Europe Billing Files - February26"
+    amea_europe_mail_template_name: str = "AMEA and Europe Billing Files - February26.html"
+    amea_europe_mail_recipient_name: str = "Team"
+    amea_europe_mail_message: str = "AMEA and Europe Billing Files - February26."
+    amea_europe_mail_body_type: str = "html"
+    amea_europe_mail_attachments: list[str] = [
+        "C:/Users/sono.pathak/Projects/billing_ai_system/output/EMEAA/EMEAA_Intercompany/Output/EMEAA_Intercompany billing lines_April 2026.xlsx",
+        "C:/Users/sono.pathak/Projects/billing_ai_system/output/APAC/APAC_Intercompny/Output/APAC_GC_Intercompany billing lines_April 2026.xlsx",
+    ]
+
     # SharePoint configuration
     sharepoint_tenant_id: str = ""
     sharepoint_client_id: str = ""

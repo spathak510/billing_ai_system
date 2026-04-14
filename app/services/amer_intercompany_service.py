@@ -17,6 +17,20 @@ def _normalized_key(value: object) -> str:
     return str(value).strip().upper().replace(" ", "")
 
 
+def _set_cell_value_safe(ws, cell_ref: str, value: object) -> None:
+    cell = ws[cell_ref]
+    if cell.__class__.__name__ != "MergedCell":
+        cell.value = value
+        return
+
+    for merged_range in ws.merged_cells.ranges:
+        if cell_ref in merged_range:
+            ws.cell(row=merged_range.min_row, column=merged_range.min_col).value = value
+            return
+
+    ws[cell_ref].value = value
+
+
 def _resolve_input_path(input_file_path: str | None) -> Path:
     if input_file_path:
         return Path(input_file_path)
@@ -49,12 +63,18 @@ def _resolve_template_path(template_path: str | None) -> Path | None:
             raise FileNotFoundError(f"Template file not found: {resolved}")
         return resolved
 
-    template_dir = Path(settings.output_dir) / "AMER_Intercompny" / "Template_Format"
-    template_files = sorted(template_dir.glob("*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if template_files:
-        return template_files[0]
+    output_root = Path(settings.output_dir)
+    template_dirs = [
+        output_root / "AMER_Intercompny" / "Template_Format",
+        output_root / "AMER_Intercompny" / "Template_Formate",
+        output_root / "AMER_Intercompny" / "Template_formate",
+    ]
+    for template_dir in template_dirs:
+        template_files = sorted(template_dir.glob("*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if template_files:
+            return template_files[0]
 
-    legacy_dir = Path(settings.output_dir) / "AMER_Intercompny"
+    legacy_dir = output_root / "AMER_Intercompny"
     legacy_templates = sorted(legacy_dir.glob("*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
     if legacy_templates:
         return legacy_templates[0]
@@ -197,9 +217,11 @@ def generate_amer_intercompany_output(
     rir_sheet = wb["RIR"]
     billing_sheet = wb["BILLING LINES"]
 
-    rir_sheet["F10"] = request_date or datetime.now().strftime("%Y-%m-%d")
-    rir_sheet["P10"] = request_name
-    rir_sheet["F11"] = account_number
+    rir_name_value = request_name.strip() if isinstance(request_name, str) and request_name.strip() else "GenWizard_Automation"
+
+    _set_cell_value_safe(rir_sheet, "F10", request_date or datetime.now().strftime("%Y-%m-%d"))
+    _set_cell_value_safe(rir_sheet, "P10", rir_name_value)
+    _set_cell_value_safe(rir_sheet, "F11", account_number)
 
     _clear_billing_lines(billing_sheet)
 
