@@ -6,12 +6,17 @@ import os
 import shutil
 import tempfile
 import unittest
+from urllib.error import HTTPError
+from unittest.mock import patch
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from openpyxl import load_workbook
 
 from app.config.settings import settings
 from app.main import app
+from app.services.sharepoint_download_service import SharePointDownloadClient
+from app.services.sharepoint_upload_service import SharePointUploadClient
 
 
 def _sheet_records(xlsx_path: str, sheet_name: str) -> list[dict[str, object]]:
@@ -29,6 +34,10 @@ def _sheet_records(xlsx_path: str, sheet_name: str) -> list[dict[str, object]]:
             continue
         records.append({header[idx]: row[idx] for idx in range(len(header))})
     return records
+
+
+def _unauthorized_http_error(url: str) -> HTTPError:
+    return HTTPError(url, 401, "Unauthorized", hdrs=None, fp=io.BytesIO(b'{"error":"unauthorized"}'))
 
 
 class BillingUsecaseFlowTest(unittest.TestCase):
@@ -119,6 +128,70 @@ class BillingUsecaseFlowTest(unittest.TestCase):
         # Course name cleanup should remove disallowed special characters.
         cleaned_course_names = [str(row.get("course_name")) for row in corp_all + non_corp_all]
         self.assertTrue(any("!!!" not in name and "@@" not in name and "$" not in name for name in cleaned_course_names))
+
+
+class SharePointClientConfigurationTest(unittest.TestCase):
+    def test_download_client_reports_missing_site_configuration(self) -> None:
+        client = SharePointDownloadClient(
+            tenant_id="tenant",
+            client_id="client",
+            client_secret="secret",
+            site_url="",
+            site_id="",
+        )
+        client._site_url = ""
+        client._site_id = ""
+
+        with patch(
+            "app.services.sharepoint_download_service.urlopen",
+            side_effect=_unauthorized_http_error("https://graph.microsoft.com/v1.0/sites/root"),
+        ):
+            with self.assertRaisesRegex(ValueError, "SHAREPOINT_SITE_URL or SHAREPOINT_SITE_ID"):
+                client._get_site_id("token")
+
+    def test_upload_client_reports_missing_site_configuration(self) -> None:
+        client = SharePointUploadClient(
+            tenant_id="tenant",
+            client_id="client",
+            client_secret="secret",
+            site_url="",
+            site_id="",
+        )
+        client._site_url = ""
+        client._site_id = ""
+
+        with patch(
+            "app.services.sharepoint_upload_service.urlopen",
+            side_effect=_unauthorized_http_error("https://graph.microsoft.com/v1.0/sites/root"),
+        ):
+            with self.assertRaisesRegex(ValueError, "SHAREPOINT_SITE_URL or SHAREPOINT_SITE_ID"):
+                client._get_site_id("token")
+
+    def test_download_client_retries_drive_lookup_with_password_auth(self) -> None:
+        client = SharePointDownloadClient(
+            tenant_id="tenant",
+            client_id="client",
+            client_secret="secret",
+            username="user@example.com",
+            password="password",
+            site_id="site-id",
+        )
+        client._token = "client-token"
+        client._auth_mode = "client_credentials"
+        client._token_expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+        def fake_urlopen(request, timeout=30):
+            auth_header = request.headers.get("Authorization")
+            if request.full_url.endswith("/drives") and auth_header == "Bearer client-token":
+                raise _unauthorized_http_error(request.full_url)
+            if request.full_url.endswith("/token"):
+                return io.BytesIO(b'{"access_token": "password-token", "expires_in": 3600}')
+            if request.full_url.endswith("/drives") and auth_header == "Bearer password-token":
+                return io.BytesIO(b'{"value": [{"name": "Documents", "id": "drive-id"}]}')
+            raise AssertionError(f"Unexpected request: {request.full_url} {auth_header}")
+
+        with patch("app.services.sharepoint_download_service.urlopen", side_effect=fake_urlopen):
+            self.assertEqual(client._get_drive_id("client-token", "site-id"), "drive-id")
 
 
 if __name__ == "__main__":

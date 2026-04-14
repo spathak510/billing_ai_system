@@ -3,6 +3,7 @@ from __future__ import annotations
 from base64 import b64decode, b64encode
 import json
 import logging
+import mimetypes
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError
@@ -12,6 +13,8 @@ from urllib.request import Request, urlopen
 logger = logging.getLogger(__name__)
 from app.services.base import EmailMessage, MailboxClient
 from app.services.excel_filter_service import remove_red_rows_from_excel
+
+ALLOWED_EXCEL_ATTACHMENT_EXTENSIONS = {".xlsx", ".xlsm"}
 
 
 
@@ -208,10 +211,12 @@ class MicrosoftGraphMailboxClient(MailboxClient):
         to_addresses: list[str],
         subject: str,
         body: str,
+        body_content_type: str = "HTML",
+        from_address: str | None = None,
         cc_addresses: list[str] | None = None,
         attachments: list[dict] | None = None,
     ) -> None:
-        """Send a new email with an HTML body and optional file attachments.
+        """Send a new email with a text or HTML body and optional file attachments.
 
         Parameters
         ----------
@@ -220,36 +225,50 @@ class MicrosoftGraphMailboxClient(MailboxClient):
         subject:
             Email subject line.
         body:
-            HTML string for the email body (pass a rendered Jinja2 template here).
+            Body content for the email.
+        body_content_type:
+            Either ``HTML`` or ``Text``.
+        from_address:
+            Optional mailbox address to send from. Falls back to configured mailbox.
         cc_addresses:
             Optional CC recipients.
         attachments:
             Optional list of dicts with keys ``name`` (filename shown to recipient)
             and ``path`` (absolute or relative path to the file on disk).
+            The display name may differ from the source file name, but it must
+            keep the same file extension.
             Example::
 
-                [{"name": "invoice.pdf", "path": "/tmp/invoice.pdf"}]
+                [{"name": "Validated Monthly Records.xlsx", "path": "/tmp/source.xlsx"}]
 
         Notes
         -----
         Requires ``Mail.ReadWrite`` and ``Mail.Send`` Graph API permissions.
         When Graph is not configured the call prints a local fallback line.
         """
+        normalized_content_type = (body_content_type or "HTML").strip().upper()
+        if normalized_content_type not in {"HTML", "TEXT"}:
+            raise ValueError("body_content_type must be either 'HTML' or 'TEXT'.")
+
         if not self._graph_enabled:
+            effective_mailbox = from_address or self._mailbox_user or "(default mailbox)"
             cc_display = ", ".join(cc_addresses or []) or "(none)"
             att_names = ", ".join(a["name"] for a in (attachments or [])) or "(none)"
             print(
-                f"[mailbox] send email to {to_addresses} | subject: {subject!r} "
+                f"[mailbox] send email from {effective_mailbox} to {to_addresses} | subject: {subject!r} "
                 f"| cc: {cc_display} | attachments: {att_names}"
             )
             return
 
-        mailbox = quote(self._mailbox_user or "", safe="@.-_")
+        mailbox_address = from_address or self._mailbox_user
+        if not mailbox_address:
+            raise RuntimeError("No sender mailbox is configured for email sending.")
+        mailbox = quote(mailbox_address, safe="@.-_")
 
         # Step 1 — create a draft message
         draft_payload: dict = {
             "subject": subject,
-            "body": {"contentType": "HTML", "content": body},
+            "body": {"contentType": normalized_content_type.title(), "content": body},
             "toRecipients": [
                 {"emailAddress": {"address": addr}} for addr in to_addresses
             ],
@@ -266,12 +285,28 @@ class MicrosoftGraphMailboxClient(MailboxClient):
 
         # Step 2 — attach files (base64-encoded)
         for att in (attachments or []):
-            file_bytes = Path(att["path"]).read_bytes()
+            file_path = Path(att["path"])
+            actual_name = file_path.name
+            attachment_name = att.get("name") or actual_name
+            if Path(attachment_name).suffix.lower() != file_path.suffix.lower():
+                raise ValueError(
+                    f"Attachment name must use the same extension as the source file: {file_path.suffix.lower()}"
+                )
+
+            extension = file_path.suffix.lower()
+            if extension not in ALLOWED_EXCEL_ATTACHMENT_EXTENSIONS:
+                raise ValueError(
+                    "Only Excel read/write attachment files are supported (.xlsx, .xlsm)."
+                )
+
+            file_bytes = file_path.read_bytes()
+            mime_type = mimetypes.guess_type(attachment_name)[0] or "application/octet-stream"
             self._graph_post(
                 f"{draft_base}/attachments",
                 {
                     "@odata.type": "#microsoft.graph.fileAttachment",
-                    "name": att["name"],
+                    "name": attachment_name,
+                    "contentType": mime_type,
                     "contentBytes": b64encode(file_bytes).decode("ascii"),
                 },
             )
