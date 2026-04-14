@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 from app.services.base import EmailMessage, MailboxClient
 from app.services.excel_filter_service import remove_red_rows_from_excel
 
-ALLOWED_EXCEL_ATTACHMENT_EXTENSIONS = {".xlsx", ".xlsm"}
+ALLOWED_ATTACHMENT_EXTENSIONS = {".xlsx", ".xlsm", ".csv"}
 
 
 
@@ -294,9 +294,9 @@ class MicrosoftGraphMailboxClient(MailboxClient):
                 )
 
             extension = file_path.suffix.lower()
-            if extension not in ALLOWED_EXCEL_ATTACHMENT_EXTENSIONS:
+            if extension not in ALLOWED_ATTACHMENT_EXTENSIONS:
                 raise ValueError(
-                    "Only Excel read/write attachment files are supported (.xlsx, .xlsm)."
+                    "Only attachment files with extensions .xlsx, .xlsm, or .csv are supported."
                 )
 
             file_bytes = file_path.read_bytes()

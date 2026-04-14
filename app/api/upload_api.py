@@ -24,6 +24,7 @@ from app.services.sharepoint_upload_service import SharePointUploadClient
 from app.api.sharepoint_processor import sharepoint_download, sharepoint_upload
 from app.agents.cleaning_agent import cleaning_data_prosessing
 from app.services.ihg_servicenow_ticket_service import create_ticket_service_now
+from app.api.mail_processor import get_available_mail_payload_templates, process_mail_for_post_validation_billing   
 
 logger = logging.getLogger(__name__)
 
@@ -368,6 +369,73 @@ def register_api_routes(app: Flask) -> None:
             return jsonify({"error": str(exc)}), 500
 
         return jsonify({"status": "sent", "to": to_addresses, "subject": subject}), 200
+    
+
+
+    @app.post("/api/v1/post_validation_send_email")
+    def post_validation_send_email():
+        """Send post-validation emails for all templates one by one."""
+
+        templates_to_send = get_available_mail_payload_templates()
+
+        if not templates_to_send:
+            return jsonify({"error": "No templates available to send."}), 400
+
+        sent_templates: list[str] = []
+        failed_templates: list[dict[str, str]] = []
+
+        for template_name in templates_to_send:
+            payload = process_mail_for_post_validation_billing({"template_name": template_name})
+
+            if isinstance(payload, dict) and payload.get("error"):
+                failed_templates.append({"template": template_name, "error": str(payload.get("error"))})
+                continue
+
+            try:
+                attachments = _normalize_email_attachments(payload.get("attachments"))
+                to_addresses = _normalize_email_addresses(payload.get("to"), "to", required=True)
+                cc_addresses = _normalize_email_addresses(payload.get("cc"), "cc")
+            except ValueError as exc:
+                failed_templates.append({"template": template_name, "error": str(exc)})
+                continue
+
+            try:
+                template_variables = payload.get("template_variables")
+                if not isinstance(template_variables, dict):
+                    template_variables = {}
+
+                mail_agent.send_email(
+                    to_addresses=to_addresses,
+                    subject=str(payload.get("subject", "")).strip(),
+                    body=None,
+                    body_type=str(payload.get("body_type") or "html").lower(),
+                    template_name=str(payload.get("template_name") or template_name),
+                    template_variables=template_variables,
+                    from_address=str(payload.get("from", "")).strip() or None,
+                    recipient_name=str(template_variables.get("recipient_name") or "Team"),
+                    message=str(template_variables.get("message") or ""),
+                    cc_addresses=cc_addresses,
+                    attachments=attachments,
+                )
+                sent_templates.append(template_name)
+            except Exception as exc:
+                logger.error("post_validation_send_email failed for template %s: %s", template_name, exc)
+                failed_templates.append({"template": template_name, "error": str(exc)})
+
+        status_code = 200 if not failed_templates else 207
+        return (
+            jsonify(
+                {
+                    "status": "completed" if sent_templates else "failed",
+                    "sent_count": len(sent_templates),
+                    "failed_count": len(failed_templates),
+                    "sent_templates": sent_templates,
+                    "failed_templates": failed_templates,
+                }
+            ),
+            status_code,
+        )
+
 
     @app.post("/api/v1/excel/remove-red")
     def remove_red_rows_api():
