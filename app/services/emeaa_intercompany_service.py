@@ -108,8 +108,10 @@ def generate_emeaa_intercompany_output(
     rir_sheet = wb["RIR"]
     billing_sheet = wb["BILLING LINES"]
 
+    rir_name_value = request_name.strip() if isinstance(request_name, str) and request_name.strip() else "GenWizard_Automation"
+
     rir_sheet["F10"] = request_date or datetime.now().strftime("%Y-%m-%d")
-    rir_sheet["P10"] = request_name
+    rir_sheet["P10"] = rir_name_value
     rir_sheet["F11"] = account_number
 
     _clear_billing_lines(billing_sheet)

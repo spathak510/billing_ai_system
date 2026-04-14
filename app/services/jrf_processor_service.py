@@ -16,7 +16,10 @@ logger = logging.getLogger(__name__)
 def _resolve_input_path(input_file_path: str | None) -> Path:
     """Resolve the input file path for JRF processing."""
     if input_file_path:
-        return Path(input_file_path)
+        path = Path(input_file_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Input file not found: {path}")
+        return path
 
     output_dir = Path(settings.output_dir)
     cleaned_files = sorted(
@@ -26,6 +29,17 @@ def _resolve_input_path(input_file_path: str | None) -> Path:
         return cleaned_files[0]
 
     raise FileNotFoundError("No cleaned_no_red_*.xlsx file found in output folder.")
+
+
+def _read_input_dataframe(source_path: Path) -> pd.DataFrame:
+    suffix = source_path.suffix.lower()
+    if suffix == ".csv":
+        return pd.read_csv(source_path)
+    if suffix in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+        return pd.read_excel(source_path, sheet_name=0)
+    raise ValueError(
+        f"Unsupported input format '{suffix}'. Supported formats are .csv, .xlsx, .xlsm, .xltx, .xltm."
+    )
 
 
 def _find_col(columns: list[str], candidates: list[str]) -> str | None:
@@ -101,8 +115,21 @@ def generate_jrf_output(
     Returns:
         Dictionary with output_path and row count
     """
+    requester_name_value = (
+        requester_name.strip() if isinstance(requester_name, str) and requester_name.strip() else "GenWizard_Automation"
+    )
+
     source_path = _resolve_input_path(input_file_path)
-    df = pd.read_excel(source_path, sheet_name=0)
+    df = _read_input_dataframe(source_path)
+
+    if df.empty:
+        logger.warning("Skipping JRF generation: input file has no rows: %s", source_path)
+        return {
+            "jrf_output_path": "",
+            "jrf_entries": 0,
+            "status": "skipped",
+            "reason": "No data rows in input file",
+        }
 
     cols = list(df.columns)
     
@@ -137,7 +164,8 @@ def generate_jrf_output(
     
     logger.info("Using JRF template: %s", template_path)
 
-    workbook = load_workbook(template_path)
+    keep_vba = template_path.suffix.lower() == ".xlsm"
+    workbook = load_workbook(template_path, keep_vba=keep_vba)
     
     # Verify sheet exists with robust fallbacks for common template sheet names.
     target_sheet = sheet_name
@@ -164,7 +192,7 @@ def generate_jrf_output(
     date_str = f"{current_dt.month:02d}/{current_dt.day:02d}/{current_dt.year}"
     
     _set_cell_value_safe(ws, "B5", date_str)
-    _set_cell_value_safe(ws, "B11", requester_name)
+    _set_cell_value_safe(ws, "B11", requester_name_value)
 
     # Find and clear old data rows (rows 16 onwards)
     max_row = ws.max_row
@@ -224,6 +252,15 @@ def generate_jrf_output(
         current_row += 1
         total_rows += 1
 
+    if total_rows == 0:
+        logger.warning("Skipping JRF generation: no journal entries generated from input file %s", source_path)
+        return {
+            "jrf_output_path": "",
+            "jrf_entries": 0,
+            "status": "skipped",
+            "reason": "No journal entries generated",
+        }
+
     # Save the workbook with month/year in filename
     month_year = datetime.now().strftime("%B_%Y")
     output_path = output_root / f"Standard_Journal_Template_{month_year}.xlsm"
@@ -233,6 +270,14 @@ def generate_jrf_output(
         output_path.unlink()
     
     workbook.save(output_path)
+
+    # Verify that the generated file is a valid workbook package before downstream upload.
+    try:
+        validation_workbook = load_workbook(output_path, keep_vba=keep_vba, data_only=False)
+        validation_workbook.close()
+    except Exception as exc:
+        logger.error("Generated JRF workbook failed integrity validation: %s", exc)
+        raise ValueError(f"Generated JRF output is not a valid Excel workbook: {output_path}") from exc
 
     logger.info("Generated JRF output: %s (total entries: %d)", output_path, total_rows)
     return {

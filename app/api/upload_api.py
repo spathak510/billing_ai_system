@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 import logging
 import os
 import threading
@@ -58,7 +59,7 @@ def _get_sharepoint_move_client() -> SharePointMoveClient:
         _sharepoint_move_client = SharePointMoveClient()
     return _sharepoint_move_client
 
-ALLOWED_EXCEL_ATTACHMENT_EXTENSIONS = {".xlsx", ".xlsm"}
+ALLOWED_EXCEL_ATTACHMENT_EXTENSIONS = {".xlsx", ".xlsm", ".csv"}
 ALLOWED_EMAIL_BODY_TYPES = {"text", "html"}
 
 
@@ -113,7 +114,7 @@ def _normalize_email_attachments(raw_attachments) -> list[dict] | None:
         actual_name = os.path.basename(path)
         actual_ext = os.path.splitext(actual_name)[1].lower()
         if actual_ext not in ALLOWED_EXCEL_ATTACHMENT_EXTENSIONS:
-            raise ValueError("Only Excel read/write attachment files are supported (.xlsx, .xlsm).")
+            raise ValueError("Only Excel read/write attachment files are supported (.xlsx, .xlsm, .csv).")
 
         if name is None:
             name = actual_name
@@ -266,10 +267,25 @@ def register_api_routes(app: Flask) -> None:
         - Or use 'template_name' with optional 'template_variables' for HTML template rendering.
         - If neither is supplied, the default template Monthly_report_validation.html is used.
         """
-        data = request.get_json(force=True, silent=True) or {}
+        data = request.get_json(silent=True)
+        if data is None:
+            raw_body = request.get_data(cache=False, as_text=False)
+            if raw_body:
+                try:
+                    data = json.loads(raw_body.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    return jsonify({"error": "Invalid JSON request body."}), 400
+
+        if data is None:
+            data = {}
+        if not isinstance(data, dict):
+            return jsonify({"error": "Request body must be a JSON object."}), 400
 
         subject = data.get("subject")
         if not subject or not isinstance(subject, str):
+            return jsonify({"error": "'subject' is required."}), 400
+        subject = subject.strip()
+        if not subject:
             return jsonify({"error": "'subject' is required."}), 400
 
         try:
@@ -284,12 +300,20 @@ def register_api_routes(app: Flask) -> None:
         if isinstance(from_address, str):
             from_address = from_address.strip()
 
-        recipient_name = data['template_variables'].get("recipient_name") or "Team"
-        message = data['template_variables'].get("message") or ""
         body = data.get("body")
         body_type = (data.get("body_type") or "text").lower()
         template_name = data.get("template_name")
-        template_variables = data.get("template_variables") or {}
+
+        raw_template_variables = data.get("template_variables")
+        if raw_template_variables is None:
+            template_variables: dict = {}
+        elif isinstance(raw_template_variables, dict):
+            template_variables = raw_template_variables
+        else:
+            return jsonify({"error": "'template_variables' must be an object when provided."}), 400
+
+        recipient_name = template_variables.get("recipient_name") or "Team"
+        message = template_variables.get("message") or ""
 
         if body is not None and not isinstance(body, str):
             return jsonify({"error": "'body' must be a string when provided."}), 400
@@ -297,10 +321,28 @@ def register_api_routes(app: Flask) -> None:
             return jsonify({"error": "'body_type' must be either 'text' or 'html'."}), 400
         if template_name is not None and not isinstance(template_name, str):
             return jsonify({"error": "'template_name' must be a string when provided."}), 400
-        if not isinstance(template_variables, dict):
-            return jsonify({"error": "'template_variables' must be an object when provided."}), 400
-        if body and template_name:
+        if isinstance(template_name, str):
+            template_name = template_name.strip()
+            if template_name and not os.path.splitext(template_name)[1]:
+                template_name = f"{template_name}.html"
+        if body is not None and template_name:
             return jsonify({"error": "Provide either 'body' or 'template_name', not both."}), 400
+        if template_name:
+            template_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "templates")
+            template_path = os.path.join(template_dir, template_name)
+            if not os.path.isfile(template_path):
+                available_templates = sorted(
+                    item for item in os.listdir(template_dir) if item.lower().endswith(".html")
+                )
+                return (
+                    jsonify(
+                        {
+                            "error": f"Template not found: {template_name}",
+                            "available_templates": available_templates,
+                        }
+                    ),
+                    400,
+                )
 
         try:
             attachments = _normalize_email_attachments(data.get("attachments"))
@@ -609,6 +651,7 @@ def register_api_routes(app: Flask) -> None:
         try:
             count = 0
             skipped_directories: list[str] = []
+            skipped_files: list[str] = []
             used_remote_month_paths: list[str] = []
             upload_client = _get_sharepoint_upload_client()
 
@@ -628,8 +671,13 @@ def register_api_routes(app: Flask) -> None:
                     if not os.path.isfile(file_path):
                         continue
                     remote_file_path = f"{exact_remote_path}/{file_name}"
-                    upload_client.upload_file(file_path, remote_file_path, overwrite=True)
-                    count += 1
+                    try:
+                        upload_client.upload_file(file_path, remote_file_path, overwrite=True)
+                        count += 1
+                    except FileNotFoundError:
+                        skipped_files.append(file_path)
+                        logger.warning("Skipping missing local file during upload: %s", file_path)
+                        continue
 
         except Exception as exc:
             logger.error("sharepoint_download_api failed: %s", exc)
@@ -645,6 +693,7 @@ def register_api_routes(app: Flask) -> None:
                     "month_folder": month_folder,
                     "Total_upload_file": count,
                     "skipped_directories": skipped_directories,
+                    "skipped_files": skipped_files,
                     "used_remote_month_paths": used_remote_month_paths,
                 }
             ),
