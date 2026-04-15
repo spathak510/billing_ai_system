@@ -1,13 +1,18 @@
 from datetime import datetime
 import logging
 from pathlib import Path
-import re
+import re, os
 
 from app.config.settings import settings
+from app.agents.mail_reader_agent import MailReaderAgent
 
 
 logger = logging.getLogger(__name__)
 
+mail_agent = MailReaderAgent()
+
+ALLOWED_EXCEL_ATTACHMENT_EXTENSIONS = {".xlsx", ".xlsm", ".csv"}
+ALLOWED_EMAIL_BODY_TYPES = {"text", "html"}
 
 TEMPLATE_PAYLOAD_PROFILES: dict[str, dict[str, object]] = {
     "AMEA_and_Europe_Billing_Files.html": {
@@ -306,6 +311,74 @@ def _build_payload(template_name: str, overrides: dict | None = None) -> dict:
     }
 
 
+def _normalize_email_attachments(raw_attachments) -> list[dict] | None:
+    if raw_attachments in (None, []):
+        return None
+    if not isinstance(raw_attachments, list):
+        raise ValueError("'attachments' must be a list when provided.")
+
+    normalized_attachments: list[dict] = []
+    for idx, att in enumerate(raw_attachments):
+        if isinstance(att, str):
+            path = att.strip()
+            name = os.path.basename(path)
+        elif isinstance(att, dict):
+            path = att.get("path")
+            name = att.get("name")
+            if name is None and isinstance(path, str):
+                name = os.path.basename(path)
+        else:
+            raise ValueError(f"Attachment at index {idx} must be a path string or an object.")
+
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError(f"Attachment at index {idx} is missing a valid 'path'.")
+        if not os.path.isfile(path):
+            raise ValueError(f"Attachment file not found: {path}")
+
+        actual_name = os.path.basename(path)
+        actual_ext = os.path.splitext(actual_name)[1].lower()
+        if actual_ext not in ALLOWED_EXCEL_ATTACHMENT_EXTENSIONS:
+            raise ValueError("Only Excel read/write attachment files are supported (.xlsx, .xlsm, .csv).")
+
+        if name is None:
+            name = actual_name
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"Attachment at index {idx} is missing a valid 'name'.")
+
+        provided_ext = os.path.splitext(name)[1].lower()
+        if provided_ext != actual_ext:
+            raise ValueError(
+                f"Attachment at index {idx} must use the exact file extension {actual_ext}."
+            )
+
+        normalized_attachments.append({"name": name, "path": path})
+
+    return normalized_attachments
+
+def _normalize_email_addresses(value, field_name: str, *, required: bool = False) -> list[str] | None:
+    if value in (None, "", []):
+        if required:
+            raise ValueError(f"'{field_name}' must be a non-empty email address or list of email addresses.")
+        return None
+
+    if isinstance(value, str):
+        normalized = [value.strip()] if value.strip() else []
+    elif isinstance(value, list):
+        normalized = []
+        for idx, item in enumerate(value):
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError(
+                    f"'{field_name}' item at index {idx} must be a non-empty email address string."
+                )
+            normalized.append(item.strip())
+    else:
+        raise ValueError(f"'{field_name}' must be an email address string or a list of email addresses.")
+
+    if required and not normalized:
+        raise ValueError(f"'{field_name}' must be a non-empty email address or list of email addresses.")
+    return normalized or None
+
+
 def get_available_mail_payload_templates() -> list[str]:
     return sorted(TEMPLATE_PAYLOAD_PROFILES)
 
@@ -329,3 +402,65 @@ def process_mail_for_post_validation_billing(mail):
     except Exception as exc:
         logger.error("Error processing mail: %s", exc)
         return {"error": str(exc)}
+    
+
+
+def post_validation_send_email():
+    """Send post-validation emails for all templates one by one."""
+
+    templates_to_send = get_available_mail_payload_templates()
+
+    if not templates_to_send:
+        return ({"error": "No templates available to send."}, 400)
+
+    sent_templates: list[str] = []
+    failed_templates: list[dict[str, str]] = []
+
+    for template_name in templates_to_send:
+        payload = process_mail_for_post_validation_billing({"template_name": template_name})
+
+        if isinstance(payload, dict) and payload.get("error"):
+            failed_templates.append({"template": template_name, "error": str(payload.get("error"))})
+            continue
+
+        try:
+            attachments = _normalize_email_attachments(payload.get("attachments"))
+            to_addresses = _normalize_email_addresses(payload.get("to"), "to", required=True)
+            cc_addresses = _normalize_email_addresses(payload.get("cc"), "cc")
+        except ValueError as exc:
+            failed_templates.append({"template": template_name, "error": str(exc)})
+            continue
+
+        try:
+            template_variables = payload.get("template_variables")
+            if not isinstance(template_variables, dict):
+                template_variables = {}
+
+            mail_agent.send_email(
+                to_addresses=to_addresses,
+                subject=str(payload.get("subject", "")).strip(),
+                body=None,
+                body_type=str(payload.get("body_type") or "html").lower(),
+                template_name=str(payload.get("template_name") or template_name),
+                template_variables=template_variables,
+                from_address=str(payload.get("from", "")).strip() or None,
+                recipient_name=str(template_variables.get("recipient_name") or "Team"),
+                message=str(template_variables.get("message") or ""),
+                cc_addresses=cc_addresses,
+                attachments=attachments,
+            )
+            sent_templates.append(template_name)
+        except Exception as exc:
+            logger.error("post_validation_send_email failed for template %s: %s", template_name, exc)
+            failed_templates.append({"template": template_name, "error": str(exc)})
+
+    
+    return {
+        "status": "completed" if sent_templates else "failed",
+        "sent_count": len(sent_templates),
+        "failed_count": len(failed_templates),
+            "sent_templates": sent_templates,
+                "failed_templates": failed_templates,
+            }
+            
+        

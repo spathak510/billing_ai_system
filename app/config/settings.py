@@ -24,6 +24,13 @@ class Settings(BaseSettings):
     anomaly_threshold: float = 0.85
     enable_ai_validation: bool = True
 
+    # Celery configuration
+    celery_broker_url: str = "redis://localhost:6379/0"
+    celery_result_backend: str = "redis://localhost:6379/1"
+    celery_timezone: str = "UTC"
+    celery_enable_utc: bool = True
+    celery_beat_heartbeat_minutes: int = 5
+
     # Mail processor defaults
     amea_europe_mail_from: str = "sa_gwz.gapi@ihg.onmicrosoft.com"
     amea_europe_mail_to: list[str] = ["sono.pathak2@ihg.com"]
