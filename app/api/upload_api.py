@@ -24,6 +24,7 @@ from app.services.sharepoint_upload_service import SharePointUploadClient
 from app.api.sharepoint_processor import sharepoint_download, sharepoint_upload
 from app.agents.cleaning_agent import cleaning_data_prosessing
 from app.services.ihg_servicenow_ticket_service import create_ticket_service_now
+from app.api.mail_processor import get_available_mail_payload_templates, process_mail_for_post_validation_billing   
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +133,71 @@ def _normalize_email_attachments(raw_attachments) -> list[dict] | None:
     return normalized_attachments
 
 
+def _extract_incident_id(servicenow_result: dict | None) -> str | None:
+    """Extract incident id from ServiceNow create ticket response payload."""
+    if not isinstance(servicenow_result, dict):
+        return None
+
+    response_body = servicenow_result.get("response")
+    if isinstance(response_body, dict):
+        for key in ("incident_id", "incidentId", "incidentID", "number", "ticket_id", "ticketId"):
+            value = response_body.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+        result_payload = response_body.get("result")
+        if isinstance(result_payload, dict):
+            for key in ("incident_id", "incidentId", "incidentID", "number", "ticket_id", "ticketId"):
+                value = result_payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+
+    return None
+
+def _run_clean_data_flow() -> None:
+    try:
+        base_remote_path = "/Monthly Billing Clean Data/".rstrip("/")  # Ensure no trailing slash
+        local_dir = settings.output_dir
+        
+        logger.info("Step 1: SharePoint download started")
+        download_result = sharepoint_download()
+        logger.info("Step 1: SharePoint download completed: %s", download_result)
+
+        logger.info("Step 2: Cleaning process started")
+        cleaning_data_prosessing()
+        logger.info("Step 2: Cleaning process completed")
+
+        
+
+        logger.info("Step 3: SharePoint upload started")
+        month_folder = datetime.now().strftime("%B_%Y")
+        remote_path = f"{base_remote_path}/{month_folder}"
+        local_dir = local_dir+"/Monthly_cleaned_report"
+        upload_result = sharepoint_upload(remote_path, local_dir)
+        logger.info("Step 3: SharePoint upload completed: %s", upload_result)
+
+        payload = {
+            "requested_by": "AMER\\USM3PA",
+            "requested_for": "AMER\\USM3PA",
+            "location": "ATLR3",
+            "situation": "other",
+            "business_service": "IHG University",
+            "service_category": "Application Support",
+            "assignment_group": "IY-GLBL-LMS Support Accenture",
+            "short_description": "LMS Monthly Billing Process - MyID Data Retrieve",
+            "description": "LMS Monthly Billing Process - MyID Data Retrieve",
+            "internal_notes": "",
+            "source": "RCC Tech Intake Form",
+        }
+
+        logger.info("Step 4: ServiceNow ticket creation started")
+        response = create_ticket_service_now(payload)
+        logger.info("Step 4: ServiceNow ticket creation completed: %s", response)
+
+    except Exception as exc:
+        logger.exception("Background flow failed: %s", exc)      
+
+
 def register_api_routes(app: Flask) -> None:
     """Register all API routes to the Flask app.
 
@@ -198,7 +264,8 @@ def register_api_routes(app: Flask) -> None:
     def list_emails():
         """Return unread emails from the mailbox (or local fallback)."""
         limit = request.args.get("limit", 25, type=int)
-        emails = mail_agent.fetch_unread(limit=limit)
+        attachment_dir = "data/Post_Validation_Data"
+        emails = mail_agent.fetch_unread(limit=limit, attachment_dir=attachment_dir)
         return jsonify(
             [
                 {
@@ -368,9 +435,76 @@ def register_api_routes(app: Flask) -> None:
             return jsonify({"error": str(exc)}), 500
 
         return jsonify({"status": "sent", "to": to_addresses, "subject": subject}), 200
+    
 
+
+    @app.post("/api/v1/post_validation_send_email")
+    def post_validation_send_email():
+        """Send post-validation emails for all templates one by one."""
+
+        templates_to_send = get_available_mail_payload_templates()
+
+        if not templates_to_send:
+            return jsonify({"error": "No templates available to send."}), 400
+
+        sent_templates: list[str] = []
+        failed_templates: list[dict[str, str]] = []
+
+        for template_name in templates_to_send:
+            payload = process_mail_for_post_validation_billing({"template_name": template_name})
+
+            if isinstance(payload, dict) and payload.get("error"):
+                failed_templates.append({"template": template_name, "error": str(payload.get("error"))})
+                continue
+
+            try:
+                attachments = _normalize_email_attachments(payload.get("attachments"))
+                to_addresses = _normalize_email_addresses(payload.get("to"), "to", required=True)
+                cc_addresses = _normalize_email_addresses(payload.get("cc"), "cc")
+            except ValueError as exc:
+                failed_templates.append({"template": template_name, "error": str(exc)})
+                continue
+
+            try:
+                template_variables = payload.get("template_variables")
+                if not isinstance(template_variables, dict):
+                    template_variables = {}
+
+                mail_agent.send_email(
+                    to_addresses=to_addresses,
+                    subject=str(payload.get("subject", "")).strip(),
+                    body=None,
+                    body_type=str(payload.get("body_type") or "html").lower(),
+                    template_name=str(payload.get("template_name") or template_name),
+                    template_variables=template_variables,
+                    from_address=str(payload.get("from", "")).strip() or None,
+                    recipient_name=str(template_variables.get("recipient_name") or "Team"),
+                    message=str(template_variables.get("message") or ""),
+                    cc_addresses=cc_addresses,
+                    attachments=attachments,
+                )
+                sent_templates.append(template_name)
+            except Exception as exc:
+                logger.error("post_validation_send_email failed for template %s: %s", template_name, exc)
+                failed_templates.append({"template": template_name, "error": str(exc)})
+
+        status_code = 200 if not failed_templates else 207
+        return (
+            jsonify(
+                {
+                    "status": "completed" if sent_templates else "failed",
+                    "sent_count": len(sent_templates),
+                    "failed_count": len(failed_templates),
+                    "sent_templates": sent_templates,
+                    "failed_templates": failed_templates,
+                }
+            ),
+            status_code,
+        )
+
+    # This endpoint is designed to trigger post validation part of a long-running background flow that downloads files from SharePoint, processes them, uploads results back to SharePoint, creates a ServiceNow ticket, and sends notification emails. It returns immediately with a 202 Accepted status while the flow continues asynchronously.
     @app.post("/api/v1/excel/remove-red")
-    def remove_red_rows_api():
+    def post_validation_flow_api():
         """Remove red-highlighted rows from an Excel file in data/ for testing.
 
         Request JSON body::
@@ -434,12 +568,45 @@ def register_api_routes(app: Flask) -> None:
         except Exception as exc:
             logger.warning("Failed to upload post validation data file: %s", exc)
 
+        time.sleep(15)  # Add delay to allow upload to start before responding 
+        payload = {
+            "requested_by": "AMER\\USM3PA",
+            "requested_for": "AMER\\USM3PA",
+            "location": "ATLR3",
+            "situation": "other [incident]",
+            "business_service": "IHG University",
+            "service_category": "Application Support",
+            "assignment_group": "IY-GLBL-LMS Support Accenture",
+            "short_description": "LMS Monthly Billing Process - PS Upload",
+            "description": "LMS Monthly Billing Process - PS Upload",
+            "internal_notes": "",
+            "source": "RCC Tech Intake Form"
+        }
+        service_now_result: dict | None = None
+        incident_id: str | None = None
+        try:
+            service_now_result = create_ticket_service_now(payload)
+            incident_id = _extract_incident_id(service_now_result)
+        except Exception as exc:
+            logger.warning("Failed to create ServiceNow ticket: %s", exc)
+
+        try:
+            post_validation_send_email()
+        except Exception as exc:
+            logger.warning("Failed to send post validation emails: %s", exc)  
+
+
+
         return (
             jsonify(
                 {
                     "status": "ok",
                     "source_file": source_path,
                     "cleaned_file": cleaned_path,
+                    "incident_id": incident_id,
+                    "servicenow_status_code": (
+                        service_now_result.get("status_code") if isinstance(service_now_result, dict) else None
+                    ),
                 }
             ),
             200,
@@ -505,57 +672,25 @@ def register_api_routes(app: Flask) -> None:
             200,
         )
 
+    # This endpoint is designed to trigger a long-running background flow that downloads files from SharePoint, processes them, uploads results back to SharePoint, creates a ServiceNow ticket, and sends notification emails. It returns immediately with a 202 Accepted status while the flow continues asynchronously.
     @app.post("/api/v1/sharepoint/download")
-    def sharepoint_download_api():
+    def initial_clean_data_flow_api():
         """Download all files from the configured SharePoint folder to local data storage.
 
         No request body is required. Files are downloaded from the configured
         SharePoint folder into the local data directory.
         """
-        remote_path = settings.sharepoint_download_root_path.rstrip("/")
-        local_dir = settings.upload_dir
-
-        try:
-            downloaded_files = sharepoint_download()
-        except Exception as exc:
-            logger.error("sharepoint_download_api failed: %s", exc)
-            return jsonify({"error": str(exc)}), 500
-        
-        thread1 = threading.Thread(target=cleaning_data_prosessing, args=())
-        thread1.start()
-        
-        time.sleep(5)  # Add delay to ensure files are fully written to disk before responding 
-        thread2 = threading.Thread(target=sharepoint_upload, args=(remote_path, local_dir))
-        thread2.start()
-
-        time.sleep(15)  # Add delay to allow upload to start before responding 
-        pyaload = {
-            "requested_by": "AMER\\USM3PA",
-            "requested_for": "AMER\\USM3PA",
-            "location": "ATLR3",
-            "situation": "Merge profiles",
-            "business_service": "IHG University",
-            "service_category": "Application Support",
-            "assignment_group": "IY-GLBL-LMS Support Accenture",
-            "short_description": "LMS billing",
-            "description": "LMS billing",
-            "internal_notes": "",
-            "source": "RCC Tech Intake Form"
-        } 
-        thread3 = threading.Thread(target=create_ticket_service_now, args=(pyaload,))
-        thread3.start()
+        worker = threading.Thread(target=_run_clean_data_flow, daemon=True)
+        worker.start()
 
         return (
             jsonify(
                 {
-                    "status": "ok",
-                    "remote_path": remote_path,
-                    "local_directory": os.path.abspath(local_dir),
-                    "downloaded_files": [os.path.abspath(path) for path in downloaded_files],
-                    "downloaded_count": len(downloaded_files),
+                    "status": "accepted",
+                    "message": "Background flow started",
                 }
             ),
-            200,
+            202,
         )
 
     @app.post("/api/v1/sharepoint/upload")

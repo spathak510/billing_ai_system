@@ -23,6 +23,7 @@ def create_ticket_service_now(
     - IHG_SERVICENOW_USERNAME
     - IHG_SERVICENOW_PASSWORD
     """
+    print("Create ticket at service_now flow Initiated...............................")
     resolved_url = url or os.getenv("IHG_SERVICENOW_URL", DEFAULT_SERVICENOW_URL)
     resolved_username = username or os.getenv("IHG_SERVICENOW_USERNAME", "")
     resolved_password = password or os.getenv("IHG_SERVICENOW_PASSWORD", "")
@@ -51,7 +52,9 @@ def create_ticket_service_now(
         response_body: Any = response.json()
     except ValueError:
         response_body = response.text
-
+        
+    print("Create ticket at service_now flow Completed...............................")
+    print(f"ServiceNow response status: {response.status_code}, body: {response_body}")
     return {
         "status_code": response.status_code,
         "response": response_body,

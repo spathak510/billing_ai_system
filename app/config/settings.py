@@ -16,6 +16,7 @@ class Settings(BaseSettings):
 
     # File handling
     upload_dir: str = "data"
+    inbound_mail_attachment_dir: str = "data/Post_validation_data"
     output_dir: str = "output"
     max_upload_size_mb: int = 20
 
@@ -27,14 +28,12 @@ class Settings(BaseSettings):
     amea_europe_mail_from: str = "sa_gwz.gapi@ihg.onmicrosoft.com"
     amea_europe_mail_to: list[str] = ["sono.pathak2@ihg.com"]
     amea_europe_mail_cc: list[str] = []
-    amea_europe_mail_subject: str = "AMEA and Europe Billing Files - February26"
-    amea_europe_mail_template_name: str = "AMEA and Europe Billing Files - February26.html"
-    amea_europe_mail_recipient_name: str = "Team"
-    amea_europe_mail_message: str = "AMEA and Europe Billing Files - February26."
+    amea_europe_mail_subject: str = "AMEA and Europe Billing Files"
+    amea_europe_mail_template_name: str = "AMEA_and_Europe_Billing_Files"
     amea_europe_mail_body_type: str = "html"
     amea_europe_mail_attachments: list[str] = [
-        "C:/Users/sono.pathak/Projects/billing_ai_system/output/EMEAA/EMEAA_Intercompany/Output/EMEAA_Intercompany billing lines_April 2026.xlsx",
-        "C:/Users/sono.pathak/Projects/billing_ai_system/output/APAC/APAC_Intercompny/Output/APAC_GC_Intercompany billing lines_April 2026.xlsx",
+        "EMEAA/EMEAA_Intercompany/Output",
+        "APAC/APAC_Intercompny/Output",
     ]
 
     # SharePoint configuration

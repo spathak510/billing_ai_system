@@ -119,11 +119,11 @@ def sharepoint_upload(remote_path: str, local_file_path: str) -> dict:
         if not local_file_path or not isinstance(local_file_path, str):
             return {"error": "'local_file_path' must be a string when provided."}
 
-        remote_path = remote_path.strip().lstrip("/")
+        remote_path = "/".join(
+            segment for segment in remote_path.strip().replace("\\", "/").split("/") if segment
+        )
         if not remote_path:
             return {"error": "'remote_path' cannot be empty."}
-        
-        final_remote_path = settings.sharepoint_download_root_path + "/" + remote_path
 
         # Resolve local_file_path relative to the project root (cwd).
         resolved = os.path.normpath(
@@ -144,6 +144,21 @@ def sharepoint_upload(remote_path: str, local_file_path: str) -> dict:
             source_path = resolved
         else:
             return {"error": f"Local file not found: {resolved}"}
+
+        source_file_name = os.path.basename(source_path)
+        remote_file_name = os.path.basename(remote_path)
+        normalized_root_path = "/".join(
+            segment
+            for segment in settings.sharepoint_download_root_path.strip().replace("\\", "/").split("/")
+            if segment
+        )
+
+        if os.path.splitext(remote_file_name)[1]:
+            final_remote_path = f"{normalized_root_path}/{remote_path}"
+        else:
+            final_remote_path = (
+                f"{normalized_root_path}/{remote_path}/{source_file_name}"
+            )
 
         try:
             result = _get_sharepoint_upload_client().upload_file(source_path, final_remote_path, overwrite=True)

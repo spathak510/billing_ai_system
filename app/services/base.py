@@ -17,7 +17,11 @@ class EmailMessage:
 
 class MailboxClient(ABC):
     @abstractmethod
-    def fetch_unread(self, limit: int = 25) -> list[EmailMessage]:
+    def fetch_unread(
+        self,
+        limit: int = 25,
+        attachment_dir: str | None = None,
+    ) -> list[EmailMessage]:
         raise NotImplementedError
 
     @abstractmethod
