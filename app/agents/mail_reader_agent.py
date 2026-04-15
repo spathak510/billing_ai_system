@@ -19,8 +19,13 @@ class MailReaderAgent:
 			timeout_seconds=int(os.getenv("GRAPH_TIMEOUT_SECONDS", "20")),
 		)
 
-	def fetch_unread(self, limit: int = 25, attachment_dir: str | None = None):
-		return self._client.fetch_unread(limit=limit, attachment_dir=attachment_dir)
+	def fetch_unread(
+		self,
+		limit: int = 25,
+		attachment_dir: str | None = None,
+		subject: str | None = None,
+	):
+		return self._client.fetch_unread(limit=limit, attachment_dir=attachment_dir, subject=subject)
 
 	def send_email(
 		self,

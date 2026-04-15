@@ -1,3 +1,6 @@
+# Celery Beat schedule file
+celerybeat-schedule
+celerybeat-schedule.*
 venv/
 .env
 .vscode/
