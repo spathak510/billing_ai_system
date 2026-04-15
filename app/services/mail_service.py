@@ -7,12 +7,13 @@ import mimetypes
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 logger = logging.getLogger(__name__)
+from app.config.settings import settings
+from app.services.attachment_storage_service import AttachmentStorageService
 from app.services.base import EmailMessage, MailboxClient
-from app.services.excel_filter_service import remove_red_rows_from_excel
 
 ALLOWED_ATTACHMENT_EXTENSIONS = {".xlsx", ".xlsm", ".csv"}
 
@@ -46,6 +47,10 @@ class MicrosoftGraphMailboxClient(MailboxClient):
         # self._graph_enabled = False  # Temporarily disabled — using local fallback
         self._job_title_cache: dict[str, str | None] = {}  # sender_email → jobTitle (per-run cache)
         self._job_title_lookup_available = True  # set False on first 403 (missing User.ReadBasic.All)
+        self._attachment_storage = AttachmentStorageService(
+            storage_dir=settings.inbound_mail_attachment_dir,
+            allowed_extensions=ALLOWED_ATTACHMENT_EXTENSIONS,
+        )
 
         self._emails = [
             # ── Rule-matched emails (keywords: invoice/payment/reimbursement/billing,
@@ -60,7 +65,11 @@ class MicrosoftGraphMailboxClient(MailboxClient):
             
         ]
 
-    def fetch_unread(self, limit: int = 25) -> list[EmailMessage]:
+    def fetch_unread(
+        self,
+        limit: int = 25,
+        attachment_dir: str | None = None,
+    ) -> list[EmailMessage]:
         if not self._graph_enabled:
             return self._emails[:limit]
 
@@ -97,10 +106,13 @@ class MicrosoftGraphMailboxClient(MailboxClient):
                 sender_name = f"{sender_name}, {job_title}" if sender_name else job_title
 
             attachment_paths: tuple[str, ...] = ()
-            if item.get("hasAttachments") and item.get("id"):
+            if item.get("id"):
                 try:
                     attachment_paths = tuple(
-                        self._download_message_attachments(item.get("id", ""))
+                        self._download_message_attachments(
+                            item.get("id", ""),
+                            attachment_dir=attachment_dir,
+                        )
                     )
                 except Exception as exc:
                     logger.warning(
@@ -122,62 +134,105 @@ class MicrosoftGraphMailboxClient(MailboxClient):
             )
         return emails
 
-    def _download_message_attachments(self, message_id: str) -> list[str]:
+    def _download_message_attachments(
+        self,
+        message_id: str,
+        attachment_dir: str | None = None,
+    ) -> list[str]:
         mailbox = quote(self._mailbox_user or "", safe="@.-_")
+        message_key = quote(message_id, safe="")
         endpoint = (
-            f"/users/{mailbox}/messages/{quote(message_id, safe='')}/attachments"
-            "?$select=id,name,contentType,@odata.type,contentBytes"
+            f"/users/{mailbox}/messages/{message_key}/attachments"
+            "?$select=id,name,contentType,isInline"
         )
-        payload = self._graph_get(endpoint)
-        values = payload.get("value", [])
-
-        # Keep inbound attachments separate from regular data/processed files.
-        attachment_dir = Path("email_attachments")
-        attachment_dir.mkdir(parents=True, exist_ok=True)
+        values = self._graph_get_collection(endpoint)
+        if not values:
+            # Some tenants/mailbox configurations return empty attachment collections unless expanded from the message.
+            expanded = self._graph_get(
+                f"/users/{mailbox}/messages/{message_key}"
+                "?$expand=attachments($select=id,name,contentType,isInline,sourceUrl)"
+            )
+            values = expanded.get("attachments", [])
 
         saved_paths: list[str] = []
         for item in values:
-            if item.get("@odata.type") != "#microsoft.graph.fileAttachment":
+            attachment_id = item.get("id")
+            if not attachment_id:
                 continue
 
-            content_b64 = item.get("contentBytes")
+            details = self._graph_get(
+                f"/users/{mailbox}/messages/{message_key}/attachments/{quote(attachment_id, safe='')}"
+            )
+
+            attachment_type = details.get("@odata.type") or item.get("@odata.type")
+            if attachment_type != "#microsoft.graph.fileAttachment":
+                continue
+
+            content_b64 = details.get("contentBytes")
             if not content_b64:
+                # Fallback for responses that omit contentBytes but still expose a binary stream endpoint.
+                try:
+                    file_bytes = self._graph_get_bytes(
+                        f"/users/{mailbox}/messages/{message_key}/attachments/{quote(attachment_id, safe='')}/$value"
+                    )
+                except RuntimeError:
+                    logger.debug(
+                        "Attachment %s on message %s has no downloadable contentBytes and /$value failed.",
+                        attachment_id,
+                        message_id,
+                    )
+                    continue
+
+                raw_name = details.get("name") or item.get("name") or "attachment.bin"
+                saved_path = self._attachment_storage.save_if_allowed(
+                    raw_name,
+                    file_bytes,
+                    storage_dir=attachment_dir,
+                )
+                if saved_path:
+                    saved_paths.append(saved_path)
                 continue
 
-            raw_name = item.get("name") or "attachment.bin"
-            safe_name = Path(raw_name).name
-            target_path = self._next_available_path(attachment_dir / safe_name)
-            target_path.write_bytes(b64decode(content_b64))
-            saved_paths.append(str(target_path))
-
-            # If attachment is an Excel file, create a cleaned copy without red rows.
-            if target_path.suffix.lower() in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
-                try:
-                    cleaned_path = remove_red_rows_from_excel(
-                        input_file_path=str(target_path),
-                    )
-                    saved_paths.append(cleaned_path)
-                except Exception as exc:
-                    logger.warning(
-                        "Failed to create cleaned Excel file for %s: %s",
-                        target_path,
-                        exc,
-                    )
+            raw_name = details.get("name") or item.get("name") or "attachment.bin"
+            file_bytes = b64decode(content_b64)
+            saved_path = self._attachment_storage.save_if_allowed(
+                raw_name,
+                file_bytes,
+                storage_dir=attachment_dir,
+            )
+            if saved_path:
+                saved_paths.append(saved_path)
 
         return saved_paths
 
+    def _graph_get_collection(self, endpoint: str) -> list[dict]:
+        items: list[dict] = []
+        next_endpoint = endpoint
+
+        while next_endpoint:
+            payload = self._graph_get(next_endpoint)
+            items.extend(payload.get("value", []))
+
+            next_link = payload.get("@odata.nextLink")
+            next_endpoint = self._next_link_to_endpoint(next_link)
+
+        return items
+
     @staticmethod
-    def _next_available_path(path: Path) -> Path:
-        if not path.exists():
-            return path
-        stem = path.stem
-        suffix = path.suffix
-        index = 1
-        while True:
-            candidate = path.parent / f"{stem}_{index}{suffix}"
-            if not candidate.exists():
-                return candidate
-            index += 1
+    def _next_link_to_endpoint(next_link: str | None) -> str | None:
+        if not next_link:
+            return None
+        if next_link.startswith("https://graph.microsoft.com/v1.0"):
+            parsed = urlparse(next_link)
+            if not parsed.path.startswith("/v1.0"):
+                return None
+            endpoint_path = parsed.path[len("/v1.0") :]
+            if parsed.query:
+                return f"{endpoint_path}?{parsed.query}"
+            return endpoint_path
+        if next_link.startswith("/"):
+            return next_link
+        return None
 
     def reply_email(
         self,
@@ -477,6 +532,21 @@ class MicrosoftGraphMailboxClient(MailboxClient):
 
     def _graph_post(self, endpoint: str, payload: dict) -> dict:
         return self._graph_request("POST", endpoint, payload)
+
+    def _graph_get_bytes(self, endpoint: str) -> bytes:
+        token = self._get_access_token()
+        url = f"https://graph.microsoft.com/v1.0{endpoint}"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "*/*",
+        }
+        request = Request(url, headers=headers, method="GET")
+        try:
+            with urlopen(request, timeout=self._timeout_seconds) as response:
+                return response.read()
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Graph bytes request failed (GET {endpoint}): {detail}") from exc
 
     def _graph_request(self, method: str, endpoint: str, payload: dict | None = None) -> dict:
         token = self._get_access_token()

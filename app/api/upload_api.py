@@ -154,7 +154,7 @@ def _extract_incident_id(servicenow_result: dict | None) -> str | None:
 
     return None
 
-def _run_sharepoint_download_flow() -> None:
+def _run_clean_data_flow() -> None:
     try:
         base_remote_path = "/Monthly Billing Clean Data/".rstrip("/")  # Ensure no trailing slash
         local_dir = settings.output_dir
@@ -195,7 +195,7 @@ def _run_sharepoint_download_flow() -> None:
         logger.info("Step 4: ServiceNow ticket creation completed: %s", response)
 
     except Exception as exc:
-        logger.exception("Background flow failed: %s", exc)
+        logger.exception("Background flow failed: %s", exc)      
 
 
 def register_api_routes(app: Flask) -> None:
@@ -264,7 +264,8 @@ def register_api_routes(app: Flask) -> None:
     def list_emails():
         """Return unread emails from the mailbox (or local fallback)."""
         limit = request.args.get("limit", 25, type=int)
-        emails = mail_agent.fetch_unread(limit=limit)
+        attachment_dir = "data/Post_Validation_Data"
+        emails = mail_agent.fetch_unread(limit=limit, attachment_dir=attachment_dir)
         return jsonify(
             [
                 {
@@ -501,9 +502,9 @@ def register_api_routes(app: Flask) -> None:
             status_code,
         )
 
-
+    # This endpoint is designed to trigger post validation part of a long-running background flow that downloads files from SharePoint, processes them, uploads results back to SharePoint, creates a ServiceNow ticket, and sends notification emails. It returns immediately with a 202 Accepted status while the flow continues asynchronously.
     @app.post("/api/v1/excel/remove-red")
-    def remove_red_rows_api():
+    def post_validation_flow_api():
         """Remove red-highlighted rows from an Excel file in data/ for testing.
 
         Request JSON body::
@@ -671,14 +672,15 @@ def register_api_routes(app: Flask) -> None:
             200,
         )
 
+    # This endpoint is designed to trigger a long-running background flow that downloads files from SharePoint, processes them, uploads results back to SharePoint, creates a ServiceNow ticket, and sends notification emails. It returns immediately with a 202 Accepted status while the flow continues asynchronously.
     @app.post("/api/v1/sharepoint/download")
-    def sharepoint_download_api():
+    def initial_clean_data_flow_api():
         """Download all files from the configured SharePoint folder to local data storage.
 
         No request body is required. Files are downloaded from the configured
         SharePoint folder into the local data directory.
         """
-        worker = threading.Thread(target=_run_sharepoint_download_flow, daemon=True)
+        worker = threading.Thread(target=_run_clean_data_flow, daemon=True)
         worker.start()
 
         return (

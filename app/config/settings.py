@@ -16,6 +16,7 @@ class Settings(BaseSettings):
 
     # File handling
     upload_dir: str = "data"
+    inbound_mail_attachment_dir: str = "data/Post_validation_data"
     output_dir: str = "output"
     max_upload_size_mb: int = 20
 
