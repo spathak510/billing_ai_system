@@ -154,6 +154,49 @@ def _extract_incident_id(servicenow_result: dict | None) -> str | None:
 
     return None
 
+def _run_sharepoint_download_flow() -> None:
+    try:
+        base_remote_path = "/Monthly Billing Clean Data/".rstrip("/")  # Ensure no trailing slash
+        local_dir = settings.output_dir
+        
+        logger.info("Step 1: SharePoint download started")
+        download_result = sharepoint_download()
+        logger.info("Step 1: SharePoint download completed: %s", download_result)
+
+        logger.info("Step 2: Cleaning process started")
+        cleaning_data_prosessing()
+        logger.info("Step 2: Cleaning process completed")
+
+        
+
+        logger.info("Step 3: SharePoint upload started")
+        month_folder = datetime.now().strftime("%B_%Y")
+        remote_path = f"{base_remote_path}/{month_folder}"
+        local_dir = local_dir+"/Monthly_cleaned_report"
+        upload_result = sharepoint_upload(remote_path, local_dir)
+        logger.info("Step 3: SharePoint upload completed: %s", upload_result)
+
+        payload = {
+            "requested_by": "AMER\\USM3PA",
+            "requested_for": "AMER\\USM3PA",
+            "location": "ATLR3",
+            "situation": "other",
+            "business_service": "IHG University",
+            "service_category": "Application Support",
+            "assignment_group": "IY-GLBL-LMS Support Accenture",
+            "short_description": "LMS Monthly Billing Process - MyID Data Retrieve",
+            "description": "LMS Monthly Billing Process - MyID Data Retrieve",
+            "internal_notes": "",
+            "source": "RCC Tech Intake Form",
+        }
+
+        logger.info("Step 4: ServiceNow ticket creation started")
+        response = create_ticket_service_now(payload)
+        logger.info("Step 4: ServiceNow ticket creation completed: %s", response)
+
+    except Exception as exc:
+        logger.exception("Background flow failed: %s", exc)
+
 
 def register_api_routes(app: Flask) -> None:
     """Register all API routes to the Flask app.
@@ -635,61 +678,17 @@ def register_api_routes(app: Flask) -> None:
         No request body is required. Files are downloaded from the configured
         SharePoint folder into the local data directory.
         """
-        base_remote_path = "/Monthly Billing Clean Data/".rstrip("/")  # Ensure no trailing slash
-        local_dir = settings.output_dir
-
-        try:
-            print("Sharepoint download flow Initiated...............................")  
-            downloaded_files = sharepoint_download()
-            print("Sharepoint download flow Completed...............................")
-        except Exception as exc:
-            logger.error("sharepoint_download_api failed: %s", exc)
-            return jsonify({"error": str(exc)}), 500
-        
-        
-        thread1 = threading.Thread(target=cleaning_data_prosessing, args=())
-        thread1.start()
-        
-        
-        time.sleep(5)  # Add delay to ensure files are fully written to disk before responding
-        month_folder = datetime.now().strftime("%B_%Y")
-
-        remote_path = f"{base_remote_path}/{month_folder}"
-        local_dir = local_dir+"/Monthly_cleaned_report"
-        thread2 = threading.Thread(target=sharepoint_upload, args=(remote_path, local_dir))
-        thread2.start()
-        
-
-        time.sleep(15)  # Add delay to allow upload to start before responding 
-        pyaload = {
-            "requested_by": "AMER\\USM3PA",
-            "requested_for": "AMER\\USM3PA",
-            "location": "ATLR3",
-            "situation": "other [incident]",
-            "business_service": "IHG University",
-            "service_category": "Application Support",
-            "assignment_group": "IY-GLBL-LMS Support Accenture",
-            "short_description": "LMS Monthly Billing Process - MyID Data Retrieve",
-            "description": "LMS Monthly Billing Process - MyID Data Retrieve",
-            "internal_notes": "",
-            "source": "RCC Tech Intake Form"
-        } 
-        
-        thread3 = threading.Thread(target=create_ticket_service_now, args=(pyaload,))
-        thread3.start()
-        
+        worker = threading.Thread(target=_run_sharepoint_download_flow, daemon=True)
+        worker.start()
 
         return (
             jsonify(
                 {
-                    "status": "ok",
-                    "remote_path": remote_path,
-                    "local_directory": os.path.abspath(local_dir),
-                    "downloaded_files": [os.path.abspath(path) for path in downloaded_files],
-                    "downloaded_count": len(downloaded_files),
+                    "status": "accepted",
+                    "message": "Background flow started",
                 }
             ),
-            200,
+            202,
         )
 
     @app.post("/api/v1/sharepoint/upload")
@@ -755,7 +754,7 @@ def register_api_routes(app: Flask) -> None:
         )
     
     @app.post("/api/v1/sharepoint/upload/validation_records")
-    def vsharepoint_upload_post_validation_record_api():
+    def sharepoint_upload_post_validation_record_api():
         """Upload a local file to SharePoint.
 
         Request JSON body::
