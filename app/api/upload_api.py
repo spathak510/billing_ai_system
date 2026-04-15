@@ -517,20 +517,30 @@ def register_api_routes(app: Flask) -> None:
         data = request.get_json(force=True, silent=True) or {}
         filename = data.get("filename")
 
-        if filename is not None and not isinstance(filename, str):
-            return jsonify({"error": "'filename' must be a string when provided."}), 400
+        # if filename is not None and not isinstance(filename, str):
+        #     return jsonify({"error": "'filename' must be a string when provided."}), 400
 
-        if filename and filename.strip():
-            safe_name = os.path.basename(filename.strip())
-            source_path = os.path.join(settings.upload_dir, safe_name)
-        else:
-            source_path = os.path.join(
+        # if filename and filename.strip():
+        #     safe_name = os.path.basename(filename.strip())
+        #     source_path = os.path.join(settings.upload_dir, safe_name)
+       
+        try:
+            limit = request.args.get("limit", 25, type=int)
+            attachment_dir = "data/Post_Validation_Data"
+            emails = mail_agent.fetch_unread(limit=limit, attachment_dir=attachment_dir)
+        except Exception as exc:
+            logger.warning("Failed to fetch emails for post validation flow: %s", exc)
+            
+        folder_path = "data/Post_Validation_Data"
+        if not os.path.exists(folder_path) and not os.listdir(folder_path):
+            return jsonify({"error": f"No files found in {folder_path} for processing."}), 404
+        
+        source_path = os.path.join(
                 settings.upload_dir,
                 "Post_validation_data",
                 DEFAULT_REMOVE_RED_FILENAME,
             )
-            safe_name = os.path.basename(source_path)
-
+        safe_name = os.path.basename(source_path)
         if not os.path.isfile(source_path):
             return jsonify({"error": f"File not found in data folder: {safe_name}"}), 404
 
@@ -573,7 +583,7 @@ def register_api_routes(app: Flask) -> None:
             "requested_by": "AMER\\USM3PA",
             "requested_for": "AMER\\USM3PA",
             "location": "ATLR3",
-            "situation": "other [incident]",
+            "situation": "other",
             "business_service": "IHG University",
             "service_category": "Application Support",
             "assignment_group": "IY-GLBL-LMS Support Accenture",
