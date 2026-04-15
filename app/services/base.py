@@ -21,6 +21,7 @@ class MailboxClient(ABC):
         self,
         limit: int = 25,
         attachment_dir: str | None = None,
+        subject: str | None = None,
     ) -> list[EmailMessage]:
         raise NotImplementedError
 

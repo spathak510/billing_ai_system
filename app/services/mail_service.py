@@ -69,9 +69,17 @@ class MicrosoftGraphMailboxClient(MailboxClient):
         self,
         limit: int = 25,
         attachment_dir: str | None = None,
+        subject: str | None = None,
     ) -> list[EmailMessage]:
+        normalized_subject = (subject or "").strip().casefold()
+
         if not self._graph_enabled:
-            return self._emails[:limit]
+            emails = self._emails
+            if normalized_subject:
+                emails = [
+                    email for email in emails if (email.subject or "").strip().casefold() == normalized_subject
+                ]
+            return emails[:limit]
 
         mailbox = quote(self._mailbox_user or "", safe="@.-_")
         endpoint = (
@@ -84,6 +92,10 @@ class MicrosoftGraphMailboxClient(MailboxClient):
         values = payload.get("value", [])
         emails: list[EmailMessage] = []
         for item in values:
+            message_subject = (item.get("subject") or "(no subject)").strip()
+            if normalized_subject and message_subject.casefold() != normalized_subject:
+                continue
+
             sender = (
                 item.get("from", {})
                 .get("emailAddress", {})
@@ -124,7 +136,7 @@ class MicrosoftGraphMailboxClient(MailboxClient):
             emails.append(
                 EmailMessage(
                     id=item.get("id", ""),
-                    subject=item.get("subject") or "(no subject)",
+                    subject=message_subject,
                     body=item.get("bodyPreview") or "",
                     sender=sender,
                     received_at=self._parse_graph_datetime(item.get("receivedDateTime")),

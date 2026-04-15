@@ -264,8 +264,14 @@ def register_api_routes(app: Flask) -> None:
     def list_emails():
         """Return unread emails from the mailbox (or local fallback)."""
         limit = request.args.get("limit", 25, type=int)
+        subject = request.args.get("subject", type=str)
+        subject = "Monthly Billing Records (April 2026) - Corp and Non-Corp Records for Validation"
         attachment_dir = "data/Post_Validation_Data"
-        emails = mail_agent.fetch_unread(limit=limit, attachment_dir=attachment_dir)
+        emails = mail_agent.fetch_unread(
+            limit=limit,
+            attachment_dir=attachment_dir,
+            subject=subject,
+        )
         return jsonify(
             [
                 {
@@ -527,7 +533,8 @@ def register_api_routes(app: Flask) -> None:
         try:
             limit = request.args.get("limit", 25, type=int)
             attachment_dir = "data/Post_Validation_Data"
-            emails = mail_agent.fetch_unread(limit=limit, attachment_dir=attachment_dir)
+            subject = "Monthly Billing Records ({}) - Corp and Non-Corp Records for Validation".format(datetime.now().strftime("%B %Y"))
+            emails = mail_agent.fetch_unread(limit=limit, attachment_dir=attachment_dir, subject=subject)
         except Exception as exc:
             logger.warning("Failed to fetch emails for post validation flow: %s", exc)
             
