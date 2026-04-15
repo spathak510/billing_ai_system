@@ -461,6 +461,5 @@ def post_validation_send_email():
         "failed_count": len(failed_templates),
             "sent_templates": sent_templates,
                 "failed_templates": failed_templates,
-            }
-            
+            }          
         
