@@ -118,8 +118,16 @@ def generate_rir_apac_output(
     Returns:
         Dictionary with output_path, record count, and total amount
     """
+    submitted_by_value = (
+        submitted_by.strip() if isinstance(submitted_by, str) and submitted_by.strip() else "GenWizard_Automation"
+    )
+
     source_path = _resolve_input_path(input_file_path)
+
     df = pd.read_excel(source_path, sheet_name=0)
+    if df.empty:
+        logger.info("No data found for RIR APAC output; skipping file generation.")
+        return {}
 
     cols = list(df.columns)
     
@@ -216,7 +224,7 @@ def generate_rir_apac_output(
     date_str = f"{current_dt.month}/{current_dt.day}/{current_dt.year}"
     
     _set_cell_value_safe(recharge_sheet, "F8", date_str)
-    _set_cell_value_safe(recharge_sheet, "O8", submitted_by)
+    _set_cell_value_safe(recharge_sheet, "O8", submitted_by_value)
 
     # Process data rows
     total = Decimal("0")

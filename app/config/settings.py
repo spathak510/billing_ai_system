@@ -16,12 +16,32 @@ class Settings(BaseSettings):
 
     # File handling
     upload_dir: str = "data"
+    inbound_mail_attachment_dir: str = "data/Post_validation_data"
     output_dir: str = "output"
     max_upload_size_mb: int = 20
 
     # Pipeline behaviour
     anomaly_threshold: float = 0.85
     enable_ai_validation: bool = True
+
+    # Celery configuration
+    celery_broker_url: str = "redis://localhost:6379/0"
+    celery_result_backend: str = "redis://localhost:6379/1"
+    celery_timezone: str = "UTC"
+    celery_enable_utc: bool = True
+    celery_beat_call_task_minutes: int = 5
+
+    # Mail processor defaults
+    amea_europe_mail_from: str = "sa_gwz.gapi@ihg.onmicrosoft.com"
+    amea_europe_mail_to: list[str] = ["sono.pathak2@ihg.com"]
+    amea_europe_mail_cc: list[str] = []
+    amea_europe_mail_subject: str = "AMEA and Europe Billing Files"
+    amea_europe_mail_template_name: str = "AMEA_and_Europe_Billing_Files"
+    amea_europe_mail_body_type: str = "html"
+    amea_europe_mail_attachments: list[str] = [
+        "EMEAA/EMEAA_Intercompany/Output",
+        "APAC/APAC_Intercompny/Output",
+    ]
 
     # SharePoint configuration
     sharepoint_tenant_id: str = ""

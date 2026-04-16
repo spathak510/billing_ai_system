@@ -6,3 +6,5 @@ pydantic-settings==2.2.1
 python-dotenv==1.0.1
 office365-rest-client-lib==2.5.4
 requests==2.31.0
+celery==5.4.0
+redis==5.0.4

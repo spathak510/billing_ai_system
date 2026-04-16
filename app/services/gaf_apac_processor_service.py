@@ -114,9 +114,17 @@ def generate_gaf_apac_output(
     output_file_name: str | None = None,
 ) -> dict[str, str | int | float]:
     """Generate GAF APAC workbook from APAC RIR NONCROP collection data."""
+    submitted_by_value = (
+        submitted_by.strip() if isinstance(submitted_by, str) and submitted_by.strip() else "GenWizard_Automation"
+    )
+
     source_path = _resolve_input_path(input_file_path)
     resolved_template = _resolve_template_path(template_path)
+
     df = pd.read_excel(source_path, sheet_name=0)
+    if df.empty:
+        logger.info("No data found for GAF APAC output; skipping file generation.")
+        return {}
 
     cols = list(df.columns)
     bu_col = _find_col(cols, ["BU"])
@@ -199,7 +207,7 @@ def generate_gaf_apac_output(
         line_no += 1
 
     gaf_sheet["G4"] = datetime.now().strftime("%B %d, %Y")
-    gaf_sheet["G5"] = submitted_by
+    gaf_sheet["G5"] = submitted_by_value
     gaf_sheet["M26"] = float(total)
 
     _set_cell_value_safe(upload_sheet, "I5", record_count)

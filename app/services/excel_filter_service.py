@@ -331,15 +331,15 @@ def remove_red_rows_from_excel(
         logger.warning("Failed APAC GC Intercompany generation for cleaned file %s: %s", output_path, exc)
 
     try:
-        rir_noncrop_file = (
-            str(apac_processing_result["rir_noncrop_path"])
-            if apac_processing_result and apac_processing_result.get("rir_noncrop_path")
+        gaf_noncrop_file = (
+            str(apac_processing_result["gaf_noncrop_path"])
+            if apac_processing_result and apac_processing_result.get("gaf_noncrop_path")
             else None
         )
-        if rir_noncrop_file:
-            generate_gaf_apac_output(input_file_path=rir_noncrop_file)
+        if gaf_noncrop_file:
+            generate_gaf_apac_output(input_file_path=gaf_noncrop_file)
         else:
-            logger.warning("RIR NONCROP collection not found in APAC processing output")
+            logger.warning("GAF NONCROP collection not found in APAC processing output")
     except Exception as exc:
         logger.warning("Failed GAF APAC generation for cleaned file %s: %s", output_path, exc)
 
@@ -352,9 +352,11 @@ def remove_red_rows_from_excel(
         if rir_noncrop_file:
             generate_rir_apac_output(input_file_path=rir_noncrop_file)
         else:
-            logger.warning("RIR NONCROP collection not found in APAC processing output")
+            logger.warning("RIR GC NONCROP collection not found in APAC processing output")
     except Exception as exc:
         logger.warning("Failed APAC_GC_RIR generation for cleaned file %s: %s", output_path, exc)
+
+        
 
     emeaa_processing_result: dict[str, str | int] | None = None
     try:
@@ -379,10 +381,36 @@ def remove_red_rows_from_excel(
     except Exception as exc:
         logger.warning("Failed EMEAA Intercompany generation for cleaned file %s: %s", output_path, exc)
 
+
+    # Only generate JRF output if there is at least one data row (excluding header)
     try:
-        generate_jrf_output(input_file_path=str(output_path))
+        rir_gc_crop_file = (
+            str(apac_processing_result["rir_gc_crop_path"])
+            if apac_processing_result and apac_processing_result.get("rir_gc_crop_path")
+            else None
+        )
+        if rir_gc_crop_file:
+            generate_jrf_output(input_file_path=rir_gc_crop_file)
+        else:
+            logger.warning("RIR GC CROP collection not found in APAC processing output")
     except Exception as exc:
-        logger.warning("Failed JRF generation for cleaned file %s: %s", output_path, exc)
+        logger.warning("Failed APAC_GC_RIR generation for cleaned file %s: %s", output_path, exc)
+
+
+    # try:
+    #     has_data = False
+    #     for sheet in output_workbook.worksheets:
+    #         rows = list(sheet.iter_rows(min_row=2, max_row=sheet.max_row, max_col=sheet.max_column, values_only=True))
+    #         # Check if any row has at least one non-None value
+    #         if any(any(cell is not None for cell in row) for row in rows):
+    #             has_data = True
+    #             break
+    #     if has_data:
+    #         generate_jrf_output(input_file_path=str(output_path))
+    #     else:
+    #         logger.info("No data found for JRF output in cleaned file %s; skipping JRF output generation.", output_path)
+    # except Exception as exc:
+    #     logger.warning("Failed JRF generation for cleaned file %s: %s", output_path, exc)
 
     logger.info("Created cleaned Excel file without red rows: %s", output_path)
     return str(output_path)

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 import logging
 import os
-import threading
-import time
+
+from app import tasks
 
 from flask import Flask, jsonify, request, send_file
 from werkzeug.exceptions import HTTPException
@@ -15,14 +16,13 @@ from app.config.settings import settings
 from app.agents.mail_reader_agent import MailReaderAgent
 from app.services.billing_service import process_billing_file
 from app.services.cleanup_service import cleanup_all_outputs, cleanup_specific_folder
-from app.services.excel_filter_service import remove_red_rows_from_excel
 from app.services.peoplesoft_output_service import generate_amer_peoplesoft_output
 from app.services.sharepoint_download_service import SharePointDownloadClient
 from app.services.sharepoint_move_service import SharePointMoveClient
 from app.services.sharepoint_upload_service import SharePointUploadClient
-from app.api.sharepoint_processor import sharepoint_download, sharepoint_upload
-from app.agents.cleaning_agent import cleaning_data_prosessing
-from app.services.ihg_servicenow_ticket_service import create_ticket_service_now
+from app.api.sharepoint_processor import sharepoint_upload_post_validation_records
+from app.api.mail_processor import post_validation_send_email  
+
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ def _get_sharepoint_move_client() -> SharePointMoveClient:
         _sharepoint_move_client = SharePointMoveClient()
     return _sharepoint_move_client
 
-ALLOWED_EXCEL_ATTACHMENT_EXTENSIONS = {".xlsx", ".xlsm"}
+ALLOWED_EXCEL_ATTACHMENT_EXTENSIONS = {".xlsx", ".xlsm", ".csv"}
 ALLOWED_EMAIL_BODY_TYPES = {"text", "html"}
 
 
@@ -113,7 +113,7 @@ def _normalize_email_attachments(raw_attachments) -> list[dict] | None:
         actual_name = os.path.basename(path)
         actual_ext = os.path.splitext(actual_name)[1].lower()
         if actual_ext not in ALLOWED_EXCEL_ATTACHMENT_EXTENSIONS:
-            raise ValueError("Only Excel read/write attachment files are supported (.xlsx, .xlsm).")
+            raise ValueError("Only Excel read/write attachment files are supported (.xlsx, .xlsm, .csv).")
 
         if name is None:
             name = actual_name
@@ -129,6 +129,28 @@ def _normalize_email_attachments(raw_attachments) -> list[dict] | None:
         normalized_attachments.append({"name": name, "path": path})
 
     return normalized_attachments
+
+
+def _extract_incident_id(servicenow_result: dict | None) -> str | None:
+    """Extract incident id from ServiceNow create ticket response payload."""
+    if not isinstance(servicenow_result, dict):
+        return None
+
+    response_body = servicenow_result.get("response")
+    if isinstance(response_body, dict):
+        for key in ("incident_id", "incidentId", "incidentID", "number", "ticket_id", "ticketId"):
+            value = response_body.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+        result_payload = response_body.get("result")
+        if isinstance(result_payload, dict):
+            for key in ("incident_id", "incidentId", "incidentID", "number", "ticket_id", "ticketId"):
+                value = result_payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+
+    return None    
 
 
 def register_api_routes(app: Flask) -> None:
@@ -197,7 +219,20 @@ def register_api_routes(app: Flask) -> None:
     def list_emails():
         """Return unread emails from the mailbox (or local fallback)."""
         limit = request.args.get("limit", 25, type=int)
-        emails = mail_agent.fetch_unread(limit=limit)
+        subject = request.args.get("subject", type=str)
+        # subject = "Monthly Billing Records (April 2026) - Corp and Non-Corp Records for Validation"
+        subject = "RE: Monthly Billing Records (April 2026) - Corp and Non-Corp Records for Validation"
+        attachment_dir = "data/Post_Validation_Data"
+        emails = mail_agent.fetch_unread(
+            limit=limit,
+            attachment_dir=attachment_dir,
+            subject=subject,
+        )
+        for email in emails:
+            try:
+                mail_agent._client.mark_as_read(email.id)
+            except Exception as exc:
+                logger.warning(f"Failed to mark email {getattr(email, 'id', None)} as read: {exc}")
         return jsonify(
             [
                 {
@@ -266,10 +301,25 @@ def register_api_routes(app: Flask) -> None:
         - Or use 'template_name' with optional 'template_variables' for HTML template rendering.
         - If neither is supplied, the default template Monthly_report_validation.html is used.
         """
-        data = request.get_json(force=True, silent=True) or {}
+        data = request.get_json(silent=True)
+        if data is None:
+            raw_body = request.get_data(cache=False, as_text=False)
+            if raw_body:
+                try:
+                    data = json.loads(raw_body.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    return jsonify({"error": "Invalid JSON request body."}), 400
+
+        if data is None:
+            data = {}
+        if not isinstance(data, dict):
+            return jsonify({"error": "Request body must be a JSON object."}), 400
 
         subject = data.get("subject")
         if not subject or not isinstance(subject, str):
+            return jsonify({"error": "'subject' is required."}), 400
+        subject = subject.strip()
+        if not subject:
             return jsonify({"error": "'subject' is required."}), 400
 
         try:
@@ -284,12 +334,20 @@ def register_api_routes(app: Flask) -> None:
         if isinstance(from_address, str):
             from_address = from_address.strip()
 
-        recipient_name = data['template_variables'].get("recipient_name") or "Team"
-        message = data['template_variables'].get("message") or ""
         body = data.get("body")
         body_type = (data.get("body_type") or "text").lower()
         template_name = data.get("template_name")
-        template_variables = data.get("template_variables") or {}
+
+        raw_template_variables = data.get("template_variables")
+        if raw_template_variables is None:
+            template_variables: dict = {}
+        elif isinstance(raw_template_variables, dict):
+            template_variables = raw_template_variables
+        else:
+            return jsonify({"error": "'template_variables' must be an object when provided."}), 400
+
+        recipient_name = template_variables.get("recipient_name") or "Team"
+        message = template_variables.get("message") or ""
 
         if body is not None and not isinstance(body, str):
             return jsonify({"error": "'body' must be a string when provided."}), 400
@@ -297,10 +355,28 @@ def register_api_routes(app: Flask) -> None:
             return jsonify({"error": "'body_type' must be either 'text' or 'html'."}), 400
         if template_name is not None and not isinstance(template_name, str):
             return jsonify({"error": "'template_name' must be a string when provided."}), 400
-        if not isinstance(template_variables, dict):
-            return jsonify({"error": "'template_variables' must be an object when provided."}), 400
-        if body and template_name:
+        if isinstance(template_name, str):
+            template_name = template_name.strip()
+            if template_name and not os.path.splitext(template_name)[1]:
+                template_name = f"{template_name}.html"
+        if body is not None and template_name:
             return jsonify({"error": "Provide either 'body' or 'template_name', not both."}), 400
+        if template_name:
+            template_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "templates")
+            template_path = os.path.join(template_dir, template_name)
+            if not os.path.isfile(template_path):
+                available_templates = sorted(
+                    item for item in os.listdir(template_dir) if item.lower().endswith(".html")
+                )
+                return (
+                    jsonify(
+                        {
+                            "error": f"Template not found: {template_name}",
+                            "available_templates": available_templates,
+                        }
+                    ),
+                    400,
+                )
 
         try:
             attachments = _normalize_email_attachments(data.get("attachments"))
@@ -326,9 +402,26 @@ def register_api_routes(app: Flask) -> None:
             return jsonify({"error": str(exc)}), 500
 
         return jsonify({"status": "sent", "to": to_addresses, "subject": subject}), 200
+    
 
+
+    @app.post("/api/v1/post_validation_send_email")
+    def post_validation_send_email_api():
+        """Send post-validation emails for all templates one by one."""
+
+        response = post_validation_send_email()  # Run synchronously for now, can be made async if needed
+        return (
+            jsonify(
+                {
+                    "data": response,
+                }
+            ),
+            200,
+        )
+
+    # This endpoint is designed to trigger post validation part of a long-running background flow that downloads files from SharePoint, processes them, uploads results back to SharePoint, creates a ServiceNow ticket, and sends notification emails. It returns immediately with a 202 Accepted status while the flow continues asynchronously.
     @app.post("/api/v1/excel/remove-red")
-    def remove_red_rows_api():
+    def post_validation_flow_api():
         """Remove red-highlighted rows from an Excel file in data/ for testing.
 
         Request JSON body::
@@ -338,67 +431,14 @@ def register_api_routes(app: Flask) -> None:
                 "output_dir": "data"  # optional
             }
         """
-        data = request.get_json(force=True, silent=True) or {}
-        filename = data.get("filename")
-
-        if filename is not None and not isinstance(filename, str):
-            return jsonify({"error": "'filename' must be a string when provided."}), 400
-
-        if filename and filename.strip():
-            safe_name = os.path.basename(filename.strip())
-            source_path = os.path.join(settings.upload_dir, safe_name)
-        else:
-            source_path = os.path.join(
-                settings.upload_dir,
-                "Post_validation_data",
-                DEFAULT_REMOVE_RED_FILENAME,
-            )
-            safe_name = os.path.basename(source_path)
-
-        if not os.path.isfile(source_path):
-            return jsonify({"error": f"File not found in data folder: {safe_name}"}), 404
-
-        ext = os.path.splitext(safe_name)[1].lower()
-        if ext not in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
-            return jsonify({"error": "Only Excel files are supported (.xlsx, .xlsm, .xltx, .xltm)."}), 400
-
-        output_dir = data.get("output_dir")
-        if output_dir is not None and not isinstance(output_dir, str):
-            return jsonify({"error": "'output_dir' must be a string when provided."}), 400
-
-        try:
-            cleaned_path = remove_red_rows_from_excel(
-                input_file_path=source_path,
-                output_dir=output_dir or settings.upload_dir,
-            )
-        except Exception as exc:
-            logger.error("remove_red_rows_api failed: %s", exc)
-            return jsonify({"error": str(exc)}), 500
-        
-        upload_result = None
-        try:
-            upload_result = sharepoint_upload_post_validation_record_api()
-            if isinstance(upload_result, tuple) and len(upload_result) >= 2:
-                status_code = upload_result[1]
-                if isinstance(status_code, int) and status_code >= 400:
-                    logger.warning(
-                        "Post validation SharePoint upload returned non-success status: %s",
-                        status_code,
-                    )
-                else:
-                    logger.info("Uploaded all output files to SharePoint")
-            else:
-                logger.info("Uploaded all output files to SharePoint")
-        except Exception as exc:
-            logger.warning("Failed to upload post validation data file: %s", exc)
+        tasks.run_post_validation_flow_task()
 
         return (
             jsonify(
                 {
-                    "status": "ok",
-                    "source_file": source_path,
-                    "cleaned_file": cleaned_path,
-                }
+                    "status": "accepted",
+                    "message": "Background flow started",
+                }    
             ),
             200,
         )
@@ -463,57 +503,25 @@ def register_api_routes(app: Flask) -> None:
             200,
         )
 
+    # This endpoint is designed to trigger a long-running background flow that downloads files from SharePoint, processes them, uploads results back to SharePoint, creates a ServiceNow ticket, and sends notification emails. It returns immediately with a 202 Accepted status while the flow continues asynchronously.
     @app.post("/api/v1/sharepoint/download")
-    def sharepoint_download_api():
+    def initial_clean_data_flow_api():
         """Download all files from the configured SharePoint folder to local data storage.
 
         No request body is required. Files are downloaded from the configured
         SharePoint folder into the local data directory.
         """
-        remote_path = settings.sharepoint_download_root_path.rstrip("/")
-        local_dir = settings.upload_dir
-
-        try:
-            downloaded_files = sharepoint_download()
-        except Exception as exc:
-            logger.error("sharepoint_download_api failed: %s", exc)
-            return jsonify({"error": str(exc)}), 500
+        tasks.run_clean_data_flow_task.delay()
         
-        thread1 = threading.Thread(target=cleaning_data_prosessing, args=())
-        thread1.start()
-        
-        time.sleep(5)  # Add delay to ensure files are fully written to disk before responding 
-        thread2 = threading.Thread(target=sharepoint_upload, args=(remote_path, local_dir))
-        thread2.start()
-
-        time.sleep(15)  # Add delay to allow upload to start before responding 
-        pyaload = {
-            "requested_by": "AMER\\USM3PA",
-            "requested_for": "AMER\\USM3PA",
-            "location": "ATLR3",
-            "situation": "Merge profiles",
-            "business_service": "IHG University",
-            "service_category": "Application Support",
-            "assignment_group": "IY-GLBL-LMS Support Accenture",
-            "short_description": "LMS billing",
-            "description": "LMS billing",
-            "internal_notes": "",
-            "source": "RCC Tech Intake Form"
-        } 
-        thread3 = threading.Thread(target=create_ticket_service_now, args=(pyaload,))
-        thread3.start()
 
         return (
             jsonify(
                 {
-                    "status": "ok",
-                    "remote_path": remote_path,
-                    "local_directory": os.path.abspath(local_dir),
-                    "downloaded_files": [os.path.abspath(path) for path in downloaded_files],
-                    "downloaded_count": len(downloaded_files),
+                    "status": "accepted",
+                    "message": "Background flow started",
                 }
             ),
-            200,
+            202,
         )
 
     @app.post("/api/v1/sharepoint/upload")
@@ -591,61 +599,16 @@ def register_api_routes(app: Flask) -> None:
                 "overwrite": true                           # optional
             }
         """
-        remote_path = settings.sharepoint_download_root_path.rstrip("/") + "/Output"
-        local_dir = settings.output_dir
-        month_folder = datetime.now().strftime("%B_%Y")
-
-        # Mapping: SharePoint destination folder -> local output subfolder
-        upload_targets = {
-            "AMER PeopleSoft": os.path.join("AMER", "AMER_Output"),
-            "AMER_InterCompany": os.path.join("AMER_Intercompny", "Output"),
-            "APAC_GC Intercompany": os.path.join("APAC", "APAC_Intercompny", "Output"),
-            "APAC_GC_GAF": os.path.join("APAC", "GAF_APAC_Processor", "Output"),
-            "APAC_GC_RIR": os.path.join("APAC", "APAC_GC_RIR", "Output"),
-            "EMEAA_Intercompany": os.path.join("EMEAA", "EMEAA_Intercompany", "Output"),
-            "Standard_Journal": os.path.join("JRF", "Output"),
-        }
-
         try:
-            count = 0
-            skipped_directories: list[str] = []
-            used_remote_month_paths: list[str] = []
-            upload_client = _get_sharepoint_upload_client()
-
-            for remote_folder, local_subdir in upload_targets.items():
-                exact_remote_path = f"{remote_path}/{remote_folder}/{month_folder}"
-                local_target_dir = os.path.join(local_dir, local_subdir)
-
-                if not os.path.isdir(local_target_dir):
-                    skipped_directories.append(local_target_dir)
-                    logger.warning("Skipping missing output folder: %s", local_target_dir)
-                    continue
-
-                used_remote_month_paths.append(exact_remote_path)
-
-                for file_name in os.listdir(local_target_dir):
-                    file_path = os.path.join(local_target_dir, file_name)
-                    if not os.path.isfile(file_path):
-                        continue
-                    remote_file_path = f"{exact_remote_path}/{file_name}"
-                    upload_client.upload_file(file_path, remote_file_path, overwrite=True)
-                    count += 1
-
+            upload_result = sharepoint_upload_post_validation_records()
         except Exception as exc:
-            logger.error("sharepoint_download_api failed: %s", exc)
+            logger.error("sharepoint_upload_post_validation_record_api failed: %s", exc)
             return jsonify({"error": str(exc)}), 500
         
-        
-
         return (
             jsonify(
                 {
-                    "status": "ok",
-                    "remote_path": remote_path,
-                    "month_folder": month_folder,
-                    "Total_upload_file": count,
-                    "skipped_directories": skipped_directories,
-                    "used_remote_month_paths": used_remote_month_paths,
+                    "data": upload_result,
                 }
             ),
             200,

@@ -7,6 +7,7 @@ from typing import Iterable, Optional
 import logging
 import re
 import os
+from datetime import datetime
 import pandas as pd
 from pathlib import Path
 
@@ -444,6 +445,7 @@ class SampleBillingComparisonAgent:
 
 
 def cleaning_data_prosessing():
+    print("Cleaning Data Processing flow Initiated...............................")
     crop_dir = Path("data/History_data/Crop")
     noncrop_dir = Path("data/History_data/NonCrop")
 
@@ -481,11 +483,16 @@ def cleaning_data_prosessing():
       
     comparison_agent = SampleBillingComparisonAgent()
 
-    output_file = os.path.join(output_path, "filtered_non_zero_data.xlsx")
+    month_year = datetime.now().strftime("%B %Y")
+    legacy_output_file = os.path.join(output_path, "filtered_non_zero_data.xlsx")
+    if os.path.exists(legacy_output_file):
+        os.remove(legacy_output_file)
+    output_file = os.path.join(output_path, f"Monthly Billing Records ({month_year}).xlsx")
 
     comparison_agent.run(
         sample_billing_df=cleaned_df,  
         comparison_file_paths=comparison_file_paths,
         output_path=output_file
     )
+    print("Cleaning Data Processing flow Completed...............................")
     return True
