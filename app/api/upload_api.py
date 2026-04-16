@@ -420,7 +420,7 @@ def register_api_routes(app: Flask) -> None:
         )
 
     # This endpoint is designed to trigger post validation part of a long-running background flow that downloads files from SharePoint, processes them, uploads results back to SharePoint, creates a ServiceNow ticket, and sends notification emails. It returns immediately with a 202 Accepted status while the flow continues asynchronously.
-    @app.post("/api/v1/excel/remove-red")
+    @app.post("/api/v1/excel/initial_post_validation_process")
     def post_validation_flow_api():
         """Remove red-highlighted rows from an Excel file in data/ for testing.
 
@@ -504,7 +504,7 @@ def register_api_routes(app: Flask) -> None:
         )
 
     # This endpoint is designed to trigger a long-running background flow that downloads files from SharePoint, processes them, uploads results back to SharePoint, creates a ServiceNow ticket, and sends notification emails. It returns immediately with a 202 Accepted status while the flow continues asynchronously.
-    @app.post("/api/v1/sharepoint/download")
+    @app.post("/api/v1/initialize_clean_data_process")
     def initial_clean_data_flow_api():
         """Download all files from the configured SharePoint folder to local data storage.
 
@@ -772,3 +772,21 @@ def register_api_routes(app: Flask) -> None:
 
         status_code = 200 if result.get("status") == "success" else 500
         return jsonify(result), status_code
+    
+
+
+
+
+    @app.post("/api/v1/test_api")
+    def vm_test_api():
+        """Only for test use"""
+        print("============================ API is Woking fine on the VM =============================")
+        
+        return (
+            jsonify(
+                {
+                    "status": "Ok",
+                }
+            ),
+            200,
+        )

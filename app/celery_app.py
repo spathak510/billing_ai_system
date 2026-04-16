@@ -24,11 +24,10 @@ def create_celery_app() -> Celery:
 
     # Minimal periodic job to verify Celery Beat wiring.
     app.conf.beat_schedule = {
-        # "billing-post-validation-flow": {
-        #     "task": "app.tasks.run_post_validation_flow_task",
-        #     # "schedule": 12 * 60 * 60,  # every 12 hours
-        #     "schedule": 1 * 60,  # every 1 minute
-        # },
+        "billing-post-validation-flow": {
+            "task": "app.tasks.run_post_validation_flow_task",
+            "schedule": 12 * 60 * 60,  # every 12 hours
+        },
     }
 
     return app
