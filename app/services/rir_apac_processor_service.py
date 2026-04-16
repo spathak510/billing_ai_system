@@ -123,7 +123,11 @@ def generate_rir_apac_output(
     )
 
     source_path = _resolve_input_path(input_file_path)
+
     df = pd.read_excel(source_path, sheet_name=0)
+    if df.empty:
+        logger.info("No data found for RIR APAC output; skipping file generation.")
+        return {}
 
     cols = list(df.columns)
     

@@ -208,9 +208,11 @@ def generate_amer_intercompany_output(
         output_path = _next_available_path(output_path)
 
     df = pd.read_excel(source_path, sheet_name=0)
+
     amer_df = _filter_amer_rows(df)
     if amer_df.empty:
-        raise ValueError("BillingCollection is EMPTY for AMER Intercompany processing.")
+        logger.info("No data found for AMER Intercompany output; skipping file generation.")
+        return {}
 
     wb, template_used = _load_workbook_for_output(resolved_template)
 

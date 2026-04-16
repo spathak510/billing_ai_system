@@ -97,13 +97,6 @@ def run_post_validation_flow_task():
                 mail_agent._client.mark_as_read(email.id)
             except Exception as exc:
                 logger.warning(f"Failed to mark email {getattr(email, 'id', None)} as read: {exc}")
-        # Mark each email as read after processing to avoid re-fetching
-        for email in emails:
-            if hasattr(email, "mark_as_read"):
-                try:
-                    email.mark_as_read()
-                except Exception as exc:
-                    logger.warning(f"Failed to mark email {getattr(email, 'id', None)} as read: {exc}")
     except Exception as exc:
         logger.warning("Failed to fetch emails for post validation flow: %s", exc)
         return {"error": str(exc)}

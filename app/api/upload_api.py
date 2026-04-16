@@ -431,7 +431,7 @@ def register_api_routes(app: Flask) -> None:
                 "output_dir": "data"  # optional
             }
         """
-        tasks.run_post_validation_flow_task.delay()
+        tasks.run_post_validation_flow_task()
 
         return (
             jsonify(
