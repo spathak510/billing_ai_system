@@ -91,6 +91,12 @@ def run_post_validation_flow_task():
         subject = "RE: Monthly Billing Records ({}) - Corp and Non-Corp Records for Validation".format(datetime.now().strftime("%B %Y"))
         emails = mail_agent.fetch_unread(limit=limit, attachment_dir=attachment_dir, subject=subject)
         logger.info("Fetched %d emails for post validation flow", len(emails))
+        # Mark each email as read after processing
+        for email in emails:
+            try:
+                mail_agent._client.mark_as_read(email.id)
+            except Exception as exc:
+                logger.warning(f"Failed to mark email {getattr(email, 'id', None)} as read: {exc}")
         # Mark each email as read after processing to avoid re-fetching
         for email in emails:
             if hasattr(email, "mark_as_read"):

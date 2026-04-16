@@ -228,6 +228,11 @@ def register_api_routes(app: Flask) -> None:
             attachment_dir=attachment_dir,
             subject=subject,
         )
+        for email in emails:
+            try:
+                mail_agent._client.mark_as_read(email.id)
+            except Exception as exc:
+                logger.warning(f"Failed to mark email {getattr(email, 'id', None)} as read: {exc}")
         return jsonify(
             [
                 {
