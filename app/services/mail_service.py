@@ -21,6 +21,26 @@ ALLOWED_ATTACHMENT_EXTENSIONS = {".xlsx", ".xlsm", ".csv"}
 
 
 class MicrosoftGraphMailboxClient(MailboxClient):
+    def mark_as_read(self, message_id: str):
+        if not self._graph_enabled:
+            return
+        mailbox = quote(self._mailbox_user or "", safe="@.-_")
+        endpoint = f"/users/{mailbox}/messages/{quote(message_id, safe='')}"
+        payload = {"isRead": True}
+        self._graph_patch(endpoint, payload)
+
+    def _graph_patch(self, endpoint: str, payload: dict) -> dict:
+        token = self._get_access_token()
+        url = f"https://graph.microsoft.com/v1.0{endpoint}" if not endpoint.startswith("https://") else endpoint
+        body = json.dumps(payload).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+        request = Request(url, data=body, headers=headers, method="PATCH")
+        with urlopen(request, timeout=self._timeout_seconds) as response:
+            return json.loads(response.read().decode("utf-8"))
     """Mailbox client backed by Microsoft Graph with safe local fallback."""
 
     def __init__(
@@ -38,14 +58,14 @@ class MicrosoftGraphMailboxClient(MailboxClient):
         self._mailbox_user = mailbox_user
         self._mailbox_password = mailbox_password
         self._timeout_seconds = timeout_seconds
-        self._token: str | None = None
-        self._token_expires_at: datetime | None = None
+        self._token = None
+        self._token_expires_at = None
 
-        self._graph_enabled = all(
-            [self._tenant_id, self._client_id, self._client_secret, self._mailbox_user, self._mailbox_password]
-        )
+        self._graph_enabled = all([
+            self._tenant_id, self._client_id, self._client_secret, self._mailbox_user, self._mailbox_password
+        ])
         # self._graph_enabled = False  # Temporarily disabled — using local fallback
-        self._job_title_cache: dict[str, str | None] = {}  # sender_email → jobTitle (per-run cache)
+        self._job_title_cache = {}  # sender_email → jobTitle (per-run cache)
         self._job_title_lookup_available = True  # set False on first 403 (missing User.ReadBasic.All)
         self._attachment_storage = AttachmentStorageService(
             storage_dir=settings.inbound_mail_attachment_dir,
@@ -62,7 +82,6 @@ class MicrosoftGraphMailboxClient(MailboxClient):
             #     sender="billing@vendor.com",
             #     received_at=datetime.now(timezone.utc),
             # ),
-            
         ]
 
     def fetch_unread(

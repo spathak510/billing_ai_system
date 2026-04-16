@@ -120,7 +120,11 @@ def generate_gaf_apac_output(
 
     source_path = _resolve_input_path(input_file_path)
     resolved_template = _resolve_template_path(template_path)
+
     df = pd.read_excel(source_path, sheet_name=0)
+    if df.empty:
+        logger.info("No data found for GAF APAC output; skipping file generation.")
+        return {}
 
     cols = list(df.columns)
     bu_col = _find_col(cols, ["BU"])

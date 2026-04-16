@@ -4,6 +4,8 @@ import logging,os
 from datetime import datetime, timezone
 from app.celery_app import celery_app
 
+from flask import request
+
 # For post-validation flow
 from app.config.settings import settings
 from app.services.ihg_servicenow_ticket_service import create_ticket_service_now
@@ -12,14 +14,11 @@ from app.agents.cleaning_agent import cleaning_data_prosessing
 from app.services.excel_filter_service import remove_red_rows_from_excel
 from app.api.sharepoint_processor import sharepoint_upload_post_validation_records
 from app.api.mail_processor import post_validation_send_email
+from app.agents.mail_reader_agent import MailReaderAgent
 
 logger = logging.getLogger(__name__)
 
-@celery_app.task(name="app.tasks.beat_heartbeat")
-def beat_heartbeat() -> str:
-    ts = datetime.now(timezone.utc).isoformat()
-    logger.info("Celery Beat heartbeat at %s", ts)
-    return ts
+mail_agent = MailReaderAgent()
 
 
 # Celery task to run the clean data flow
@@ -73,17 +72,46 @@ def run_clean_data_flow_task():
 
 
 # Celery task to run post-validation flow in strict order
-@celery_app.task(name="app.tasks.run_post_validation_flow")
+@celery_app.task(name="app.tasks.run_post_validation_flow_task")
 def run_post_validation_flow_task():
     """
     Celery task: Run post-validation flow in strict order.
     Steps:
       1. remove_red_rows_from_excel
-      2. sharepoint_upload_post_validation_record_api
+      2. sharepoint_upload_post_validation_records
       3. create_ticket_service_now
       4. post_validation_send_email
     Returns a summary dict or error.
     """
+
+    try:
+        # limit = request.args.get("limit", 25, type=int)
+        limit = 1
+        attachment_dir = "data/Post_Validation_Data"
+        subject = "RE: Monthly Billing Records ({}) - Corp and Non-Corp Records for Validation".format(datetime.now().strftime("%B %Y"))
+        emails = mail_agent.fetch_unread(limit=limit, attachment_dir=attachment_dir, subject=subject)
+        logger.info("Fetched %d emails for post validation flow", len(emails))
+        # Mark each email as read after processing
+        for email in emails:
+            try:
+                mail_agent._client.mark_as_read(email.id)
+            except Exception as exc:
+                logger.warning(f"Failed to mark email {getattr(email, 'id', None)} as read: {exc}")
+    except Exception as exc:
+        logger.warning("Failed to fetch emails for post validation flow: %s", exc)
+        return {"error": str(exc)}
+    
+    folder_path = "data/Post_Validation_Data"
+    if not os.path.exists(folder_path) or not os.listdir(folder_path):
+        logger.warning(f"No files found in {folder_path} for post validation flow.")
+        return {"error": f"No files found in {folder_path} for processing."}
+    
+    safe_name = os.listdir(settings.upload_dir+"/Post_validation_data/")[0]
+    ext = os.path.splitext(safe_name)[1].lower()
+    if ext not in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+        return {"error": "Only Excel files are supported (.xlsx, .xlsm, .xltx, .xltm)."}
+
+
 
     # Step 1: Remove red-highlighted rows
     filename = os.listdir(settings.upload_dir+"/Post_validation_data/")[0]

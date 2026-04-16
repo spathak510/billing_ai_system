@@ -228,6 +228,11 @@ def register_api_routes(app: Flask) -> None:
             attachment_dir=attachment_dir,
             subject=subject,
         )
+        for email in emails:
+            try:
+                mail_agent._client.mark_as_read(email.id)
+            except Exception as exc:
+                logger.warning(f"Failed to mark email {getattr(email, 'id', None)} as read: {exc}")
         return jsonify(
             [
                 {
@@ -426,32 +431,7 @@ def register_api_routes(app: Flask) -> None:
                 "output_dir": "data"  # optional
             }
         """
-        data = request.get_json(force=True, silent=True) or {}
-       
-        try:
-            limit = request.args.get("limit", 25, type=int)
-            attachment_dir = "data/Post_Validation_Data"
-            subject = "RE: Monthly Billing Records ({}) - Corp and Non-Corp Records for Validation".format(datetime.now().strftime("%B %Y"))
-            emails = mail_agent.fetch_unread(limit=limit, attachment_dir=attachment_dir, subject=subject)
-        except Exception as exc:
-            logger.warning("Failed to fetch emails for post validation flow: %s", exc)
-            
-        folder_path = "data/Post_Validation_Data"
-        if not os.path.exists(folder_path) or not os.listdir(folder_path):
-            logger.warning(f"No files found in {folder_path} for post validation flow.")
-            return jsonify({"error": f"No files found in {folder_path} for processing."}), 404
-        
-
-        safe_name = os.listdir(settings.upload_dir+"/Post_validation_data/")[0]
-        ext = os.path.splitext(safe_name)[1].lower()
-        if ext not in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
-            return jsonify({"error": "Only Excel files are supported (.xlsx, .xlsm, .xltx, .xltm)."}), 400
-
-        output_dir = data.get("output_dir")
-        if output_dir is not None and not isinstance(output_dir, str):
-            return jsonify({"error": "'output_dir' must be a string when provided."}), 400
-
-        tasks.run_post_validation_flow_task.delay()
+        tasks.run_post_validation_flow_task()
 
         return (
             jsonify(

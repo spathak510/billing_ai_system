@@ -168,6 +168,7 @@ def generate_apac_processing_output(
     source_path = _resolve_input_path(input_file_path)
     df = pd.read_excel(source_path, sheet_name=0)
 
+
     col_map = {str(col).upper(): col for col in df.columns}
     bu_col = col_map.get("BU")
     currency_col = col_map.get("CURRENCYCODE")
@@ -186,6 +187,10 @@ def generate_apac_processing_output(
             if col is None
         ]
         raise ValueError(f"Missing required columns for APAC processing: {', '.join(missing)}")
+
+    if df.empty:
+        logger.info("No data found for APAC processing output; skipping file generation.")
+        return {}
 
     apac_gc_crop_rows: list[dict[str, object]] = []
     apac_gc_noncrop_rows: list[dict[str, object]] = []
@@ -294,9 +299,11 @@ def generate_apac_gc_intewrcompany_output(
     final_file_name = f"{output_base_name}_{datetime.now().strftime('%B %Y')}.xlsx"
     output_path = target_dir / final_file_name
 
+
     df = pd.read_excel(source_path, sheet_name=0)
     if df.empty:
-        raise ValueError("BillingCollection is EMPTY for APAC GC Intercompany processing.")
+        logger.info("No data found for APAC GC Intercompany output; skipping file generation.")
+        return {}
 
     wb = load_workbook(resolved_template)
     if "RIR" not in wb.sheetnames or "BILLING LINES" not in wb.sheetnames:

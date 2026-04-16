@@ -253,7 +253,7 @@ def generate_jrf_output(
         total_rows += 1
 
     if total_rows == 0:
-        logger.warning("Skipping JRF generation: no journal entries generated from input file %s", source_path)
+        logger.info("No valid journal entries found for JRF; skipping output file generation for %s", source_path)
         return {
             "jrf_output_path": "",
             "jrf_entries": 0,
@@ -261,14 +261,14 @@ def generate_jrf_output(
             "reason": "No journal entries generated",
         }
 
-    # Save the workbook with month/year in filename
+    # Save the workbook with month/year in filename only if there are entries
     month_year = datetime.now().strftime("%B_%Y")
     output_path = output_root / f"Standard_Journal_Template_{month_year}.xlsm"
-    
+
     # Delete existing file if it exists
     if output_path.exists():
         output_path.unlink()
-    
+
     workbook.save(output_path)
 
     # Verify that the generated file is a valid workbook package before downstream upload.

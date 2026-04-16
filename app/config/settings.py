@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     celery_result_backend: str = "redis://localhost:6379/1"
     celery_timezone: str = "UTC"
     celery_enable_utc: bool = True
-    celery_beat_heartbeat_minutes: int = 5
+    celery_beat_call_task_minutes: int = 5
 
     # Mail processor defaults
     amea_europe_mail_from: str = "sa_gwz.gapi@ihg.onmicrosoft.com"

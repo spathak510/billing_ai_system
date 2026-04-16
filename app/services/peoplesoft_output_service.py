@@ -78,6 +78,11 @@ def generate_amer_peoplesoft_output(
 
     df = _filter_amer_rows(df)
 
+    # Only generate output if there is at least one data row
+    if df.empty:
+        logger.info("No data found for AMER PeopleSoft output; skipping file generation.")
+        return {}
+
     # Ensure output directory exists under the current AMER folder structure.
     output_dir = Path(settings.output_dir) / "AMER" / "AMER_Output"
     output_dir.mkdir(parents=True, exist_ok=True)
