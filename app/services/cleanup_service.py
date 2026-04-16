@@ -33,84 +33,73 @@ def cleanup_all_outputs() -> dict[str, object]:
         - removed_paths: list of removed file paths (first 50)
         - locations_cleaned: list of folders that were cleaned
     """
-    output_dir = Path(settings.output_dir)
-    data_dir = Path(settings.upload_dir)
-    
+    # Build folders to clean using dynamic base paths from settings
+    data_base = Path(settings.upload_dir)
+    output_base = Path(settings.output_dir)
+    folders_to_clean = [
+        data_base,
+        data_base / "History_data" / "Crop",
+        data_base / "History_data" / "NonCrop",
+        data_base / "Monthly_data",
+        data_base / "Post_validation_data",
+        output_base,
+        output_base / "AMER" / "AMER_Output",
+        output_base / "AMER_Intercompny" / "Output",
+        output_base / "APAC" / "APAC_GC_RIR" / "Output",
+        output_base / "APAC" / "APAC_Intercompny" / "Output",
+        output_base / "APAC" / "APAC_Output",
+        output_base / "APAC" / "GAF_APAC_Processor" / "Output",
+        output_base / "EMEAA" / "EMEAA_Intercompany" / "Output",
+        output_base / "EMEAA" / "Output",
+        output_base / "JRF" / "Output",
+        output_base / "Monthly_cleaned_report",
+        output_base / "Region_Wise_Split",
+    ]
+
     files_deleted = 0
     folders_scanned = 0
     total_size_bytes = 0
     removed_paths = []
     locations_cleaned = []
-    
+
     try:
-        # Clean output/ directory - remove all files except templates
-        if output_dir.exists():
-            locations_cleaned.append(str(output_dir))
-            for folder_path in output_dir.rglob("*"):
-                if folder_path.is_dir():
-                    folders_scanned += 1
-                elif folder_path.is_file():
-                    # Skip template files - preserve template folders
-                    if "template" in str(folder_path).lower():
-                        logger.debug("Skipping template file: %s", folder_path)
-                        continue
-                    
-                    try:
-                        file_size = folder_path.stat().st_size
-                        total_size_bytes += file_size
-                        folder_path.unlink()
-                        files_deleted += 1
-                        
-                        if len(removed_paths) < 50:
-                            removed_paths.append(f"output/{folder_path.relative_to(output_dir)}")
-                        
-                        logger.debug("Deleted file: %s (%.2f KB)", folder_path, file_size / 1024)
-                    except OSError as e:
-                        logger.warning("Failed to delete file %s: %s", folder_path, e)
-                        continue
-        else:
-            logger.warning("Output directory does not exist: %s", output_dir)
-        
-        # Clean data/ directory - remove only cleaned_no_red_*.xlsx files
-        if data_dir.exists():
-            locations_cleaned.append(str(data_dir))
-            for file_path in data_dir.glob("cleaned_no_red_*.xlsx"):
-                if file_path.is_file():
-                    try:
-                        file_size = file_path.stat().st_size
-                        total_size_bytes += file_size
-                        file_path.unlink()
-                        files_deleted += 1
-                        
-                        if len(removed_paths) < 50:
-                            removed_paths.append(f"data/{file_path.name}")
-                        
-                        logger.debug("Deleted file: %s (%.2f KB)", file_path, file_size / 1024)
-                    except OSError as e:
-                        logger.warning("Failed to delete file %s: %s", file_path, e)
-                        continue
-        else:
-            logger.warning("Data directory does not exist: %s", data_dir)
-        
+        for folder in folders_to_clean:
+            folder_path = Path(folder)
+            if folder_path.exists() and folder_path.is_dir():
+                locations_cleaned.append(str(folder_path))
+                folders_scanned += 1
+                for file in folder_path.iterdir():
+                    if file.is_file():
+                        try:
+                            file_size = file.stat().st_size
+                            total_size_bytes += file_size
+                            file.unlink()
+                            files_deleted += 1
+                            if len(removed_paths) < 50:
+                                removed_paths.append(str(file))
+                            logger.debug("Deleted file: %s (%.2f KB)", file, file_size / 1024)
+                        except OSError as e:
+                            logger.warning("Failed to delete file %s: %s", file, e)
+                            continue
+            else:
+                logger.warning("Folder does not exist: %s", folder_path)
+
         size_freed_mb = total_size_bytes / (1024 * 1024)
-        
         logger.info(
             "Cleanup completed: deleted %d files, scanned %d folders, freed %.2f MB",
             files_deleted,
             folders_scanned,
             size_freed_mb,
         )
-        
         return {
             "status": "success",
-            "message": "Cleanup completed successfully (output/ and data/cleaned files removed)",
+            "message": "Cleanup completed successfully (only specified folders cleaned)",
             "files_deleted": files_deleted,
             "folders_scanned": folders_scanned,
             "size_freed_mb": round(size_freed_mb, 2),
             "removed_paths": removed_paths,
             "locations_cleaned": locations_cleaned,
         }
-    
     except Exception as exc:
         error_msg = f"Cleanup failed: {str(exc)}"
         logger.error(error_msg)
@@ -156,7 +145,7 @@ def cleanup_specific_folder(folder_name: str) -> dict[str, object]:
         for file_path in target_folder.rglob("*"):
             if file_path.is_file():
                 # Skip template files
-                if "template" in str(file_path).lower():
+                if any(template_keyword in str(file_path).lower() for template_keyword in ["template", "format"]):
                     logger.debug("Skipping template file: %s", file_path)
                     continue
                 

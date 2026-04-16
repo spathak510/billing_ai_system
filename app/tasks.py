@@ -9,6 +9,7 @@ from flask import request
 # For post-validation flow
 from app.config.settings import settings
 from app.services.ihg_servicenow_ticket_service import create_ticket_service_now
+from app.services.cleanup_service import cleanup_all_outputs
 from app.api.sharepoint_processor import sharepoint_download, sharepoint_upload
 from app.agents.cleaning_agent import cleaning_data_prosessing
 from app.services.excel_filter_service import remove_red_rows_from_excel
@@ -30,7 +31,11 @@ def run_clean_data_flow_task():
         local_dir = settings.output_dir
         
         logger.info("Step 1: SharePoint download started")
+        attempt = 1
         download_result = sharepoint_download()
+        if attempt < 2 and download_result.get("status") != "Monthly report files downloaded. History CROP files downloaded. History NON-CROP files downloaded. ":
+            attempt += 1
+            download_result = sharepoint_download() # retry once if there was an error, as SharePoint can be flaky. If it fails again, we will log the error and continue with the flow, as the cleaning process can still be useful for any files that were downloaded successfully.
         logger.info("Step 1: SharePoint download completed: %s", download_result)
 
         logger.info("Step 2: Cleaning process started")
@@ -164,12 +169,27 @@ def run_post_validation_flow_task():
         logger.error("Step 4 failed: %s", exc)
         return {"error": f"post_validation_send_email failed: {exc}"}
 
+    # Schedule cleanup task to run after 6 hours (21600 seconds)
+    try:
+        run_cleanup_task.apply_async(countdown=21600)
+        logger.info("Scheduled run_cleanup_task to execute in 6 hours.")
+    except Exception as exc:
+        logger.error("Failed to schedule cleanup task: %s", exc)
+
     return {
         "status": "ok",
         "cleaned_file": cleaned_path,
         "upload_result": str(upload_result),
         "servicenow_result": str(servicenow_result),
     }
+
+
+@celery_app.task(name="app.tasks.run_cleanup_task")
+def run_cleanup_task():
+    logger.info("Starting cleanup of output folders................................................")
+    cleanup_all_outputs()
+    logger.info("Cleanup task completed.......................................................")
+    return {"status": "cleanup completed"}
 
 
 
