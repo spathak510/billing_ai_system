@@ -4,7 +4,8 @@ import os
 from pathlib import Path
 
 from app.services.mail_service import MicrosoftGraphMailboxClient
-
+from dotenv import load_dotenv
+load_dotenv()
 
 class MailReaderAgent:
 	"""Orchestrates mailbox workflows while delegating Graph calls to service."""

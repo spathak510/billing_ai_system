@@ -4,7 +4,8 @@ import os
 from typing import Any
 
 import requests
-
+from dotenv import load_dotenv
+load_dotenv()
 
 DEFAULT_SERVICENOW_URL = "https://ihguat.service-now.com/api/x_ihgih_intake/v1/ticket/createTicket"
 
@@ -27,6 +28,10 @@ def create_ticket_service_now(
     resolved_url = url or os.getenv("IHG_SERVICENOW_URL", DEFAULT_SERVICENOW_URL)
     resolved_username = username or os.getenv("IHG_SERVICENOW_USERNAME", "")
     resolved_password = password or os.getenv("IHG_SERVICENOW_PASSWORD", "")
+
+    # resolved_url = "https://ihguat.service-now.com/api/x_ihgih_intake/v1/ticket/createTicket"
+    # resolved_username = "svc_GenWizard"
+    # resolved_password = "Fqs!#45e3j#_^:^Q"
 
     if not resolved_username or not resolved_password:
         raise ValueError(
