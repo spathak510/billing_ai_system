@@ -21,34 +21,50 @@ logger = logging.getLogger(__name__)
 
 mail_agent = MailReaderAgent()
 
+#===============Log handaling========================
+logger.setLevel(logging.INFO)
+
+# Create file handler
+file_handler = logging.FileHandler("C:\\temp\\celery_task_debug.log")
+file_handler.setLevel(logging.INFO)
+
+# Formatter
+formatter = logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+file_handler.setFormatter(formatter)
+
+# Attach handler (avoid duplicate handlers)
+if not logger.handlers:
+    logger.addHandler(file_handler)
 
 # Celery task to run the clean data flow
 @celery_app.task(name="app.tasks.run_clean_data_flow")
 def run_clean_data_flow_task():
-    """Run the SharePoint download, cleaning, upload, and ServiceNow flow asynchronously."""
+    """Run the SharePoint download, cleaning, upload, and ServiceNow AI Agent asynchronously."""
     try:
         base_remote_path = "/Monthly Billing Clean Data/".rstrip("/")  # Ensure no trailing slash
         local_dir = settings.output_dir
         
-        logger.info("Step 1: SharePoint download started")
+        logger.info("Step 1: Files download from SharePoint AI Agent started.....................")
         attempt = 1
         download_result = sharepoint_download()
         if attempt < 2 and download_result.get("status") != "Monthly report files downloaded. History CROP files downloaded. History NON-CROP files downloaded. ":
             attempt += 1
             download_result = sharepoint_download() # retry once if there was an error, as SharePoint can be flaky. If it fails again, we will log the error and continue with the flow, as the cleaning process can still be useful for any files that were downloaded successfully.
-        logger.info("Step 1: SharePoint download completed: %s", download_result)
+        logger.info("Step 1: Files download from SharePoint AI Agent completed: %s", download_result)
 
-        logger.info("Step 2: Cleaning process started")
+        logger.info("Step 2: Cleaning AI Agent started..............................")
         cleaning_data_prosessing()
-        logger.info("Step 2: Cleaning process completed")
+        logger.info("Step 2: Cleaning AI Agent completed........................................")
 
         
-        logger.info("Step 3: SharePoint upload started")
+        logger.info("Step 3: File upload on SharePoint AI Agent started............................")
         month_folder = datetime.now().strftime("%B_%Y")
         remote_path = f"{base_remote_path}/{month_folder}"
         local_dir = local_dir+"/Monthly_cleaned_report"
         upload_result = sharepoint_upload(remote_path, local_dir)
-        logger.info("Step 3: SharePoint upload completed: %s", upload_result)
+        logger.info("Step 3: File upload on SharePoint AI Agent completed: %s", upload_result)
 
         payload = {
             "requested_by": "AMER\\USM3PA",
@@ -64,11 +80,11 @@ def run_clean_data_flow_task():
             "source": "RCC Tech Intake Form",
         }
 
-        logger.info("Step 4: ServiceNow ticket creation started")
+        logger.info("Step 4: ServiceNow ticket creation  AI Agent started.......................................")
         response = create_ticket_service_now(payload)
-        logger.info("Step 4: ServiceNow ticket creation completed: %s", response)
+        logger.info("Step 4: ServiceNow ticket creation  AI Agent completed: %s", response)
 
-        logger.info("Cleaning data Background flow completed successfully")
+        logger.info("File download, cleaning data, File upload, and ServiceNow AI Agent completed successfully")
         return True 
 
     except Exception as exc:
@@ -91,11 +107,15 @@ def run_post_validation_flow_task():
 
     try:
         # limit = request.args.get("limit", 25, type=int)
+        logger.info("Step:1 MailBox reader AI Agent started.......................................")
         limit = 1
         attachment_dir = "data/Post_Validation_Data"
         subject = "RE: Monthly Billing Records ({}) - Corp and Non-Corp Records for Validation".format(datetime.now().strftime("%B %Y"))
         emails = mail_agent.fetch_unread(limit=limit, attachment_dir=attachment_dir, subject=subject)
-        logger.info("Fetched %d emails for post validation flow", len(emails))
+        logger.info("Setp1: Fetched %d emails from mail reader AI Agent  completed", len(emails))
+        if len(emails)<1:
+            logger.info("No unread emails found. Skipping mail reader AI Agent execution.")
+            return {"status": "No emails to process"}
         # Mark each email as read after processing
         for email in emails:
             try:
@@ -103,12 +123,12 @@ def run_post_validation_flow_task():
             except Exception as exc:
                 logger.warning(f"Failed to mark email {getattr(email, 'id', None)} as read: {exc}")
     except Exception as exc:
-        logger.warning("Failed to fetch emails for post validation flow: %s", exc)
+        logger.warning("Failed mail reader AI Agent to fetch emails : %s", exc)
         return {"error": str(exc)}
     
     folder_path = "data/Post_Validation_Data"
     if not os.path.exists(folder_path) or not os.listdir(folder_path):
-        logger.warning(f"No files found in {folder_path} for post validation flow.")
+        logger.warning(f"No files found in {folder_path} by mail reader AI Agent.")
         return {"error": f"No files found in {folder_path} for processing."}
     
     safe_name = os.listdir(settings.upload_dir+"/Post_validation_data/")[0]
@@ -123,22 +143,24 @@ def run_post_validation_flow_task():
     source_path = os.path.join(settings.upload_dir, "Post_validation_data", filename)
     output_dir = settings.upload_dir
     try:
+        logger.info("Step 2: Clasification AI Agent remove_red_rows_from_excel started...........")
         cleaned_path = remove_red_rows_from_excel(
             input_file_path=source_path,
             output_dir=output_dir,
         )
-        logger.info("Step 1: remove_red_rows_from_excel completed: %s", cleaned_path)
+        logger.info("Step 2: Clasification AI Agent remove_red_rows_from_excel completed: %s", cleaned_path)
     except Exception as exc:
         logger.error("Step 1 failed: %s", exc)
-        return {"error": f"remove_red_rows_from_excel failed: {exc}"}
+        return {"error": f" Step 2: Clasification AI Agent failed to remove_red_rows_from_excel: {exc}"}
 
     # Step 2: SharePoint upload
     try:
+        logger.info("Step 3: File Upload AI Agent started................................")
         upload_result = sharepoint_upload_post_validation_records()
-        logger.info("Step 2: sharepoint_upload_post_validation_records completed: %s", upload_result)
+        logger.info("Step 3: File Upload AI Agent completed: %s", upload_result)
     except Exception as exc:
         logger.error("Step 2 failed: %s", exc)
-        return {"error": f"sharepoint_upload_post_validation_records failed: {exc}"}
+        return {"error": f" Step 3: Upload AI Agent failed for sharepoint upload post validation records: {exc}"}
 
     # Step 3: ServiceNow ticket
     payload = {
@@ -155,26 +177,29 @@ def run_post_validation_flow_task():
         "source": "RCC Tech Intake Form"
     }
     try:
+        logger.info("Step 4: Ticket initiator AI Agent started for PS Upload .......................")
         servicenow_result = create_ticket_service_now(payload)
-        logger.info("Step 3: create_ticket_service_now completed: %s", servicenow_result)
+        logger.info("Step 4: Ticket initiator AI Agent completed PS Upload : %s", servicenow_result)
     except Exception as exc:
-        logger.error("Step 3 failed: %s", exc)
+        logger.error("Step 4: Ticket initiator AI Agent PS Upload failed: %s", exc)
         return {"error": f"create_ticket_service_now failed: {exc}"}
 
     # Step 4: Post-validation send email
     try:
+        logger.info("Step 5: SendMail Ai Agent started for Post validation............................")
         post_validation_send_email()
-        logger.info("Step 4: post_validation_send_email completed")
+        logger.info("Step 5: SendMail Ai Agent completed for Post validation ............................")
     except Exception as exc:
-        logger.error("Step 4 failed: %s", exc)
+        logger.error("Step 5: SendMail Ai Agent failed for Post validation: %s", exc)
         return {"error": f"post_validation_send_email failed: {exc}"}
 
     # Schedule cleanup task to run after 6 hours (21600 seconds)
     try:
+        logger.info("Step 6: Cleanup AI Agent will started in 6 hours...................................")
         run_cleanup_task.apply_async(countdown=21600)
-        logger.info("Scheduled run_cleanup_task to execute in 6 hours.")
+        logger.info("Step 6: Cleanup AI Agent completed local files cleanup.............................")
     except Exception as exc:
-        logger.error("Failed to schedule cleanup task: %s", exc)
+        logger.error(" Step 6: Cleanup AI Agent Failed to cleanup local files : %s", exc)
 
     return {
         "status": "ok",
@@ -186,9 +211,9 @@ def run_post_validation_flow_task():
 
 @celery_app.task(name="app.tasks.run_cleanup_task")
 def run_cleanup_task():
-    logger.info("Starting cleanup of output folders................................................")
+    logger.info("Starting Cleanup AI Agent for output folders................................................")
     cleanup_all_outputs()
-    logger.info("Cleanup task completed.......................................................")
+    logger.info("Cleanup AI Agent for task completed.......................................................")
     return {"status": "cleanup completed"}
 
 
