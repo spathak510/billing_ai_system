@@ -14,7 +14,7 @@ from app.api.sharepoint_processor import sharepoint_download, sharepoint_upload
 from app.agents.cleaning_agent import cleaning_data_prosessing
 from app.services.excel_filter_service import remove_red_rows_from_excel
 from app.api.sharepoint_processor import sharepoint_upload_post_validation_records
-from app.api.mail_processor import post_validation_send_email
+from app.api.mail_processor import post_validation_send_email, send_text_email
 from app.agents.mail_reader_agent import MailReaderAgent
 
 logger = logging.getLogger(__name__)
@@ -106,13 +106,14 @@ def run_post_validation_flow_task():
     """
 
     try:
+        # Step 1: Mail reader agent to fetch emails and save attachments
         # limit = request.args.get("limit", 25, type=int)
-        logger.info("Step:1 MailBox reader AI Agent started.......................................")
+        logger.info("Step 1: MailBox reader Agent started.......................................")
         limit = 1
         attachment_dir = "data/Post_Validation_Data"
         subject = "RE: Monthly Billing Records ({}) - Corp and Non-Corp Records for Validation".format(datetime.now().strftime("%B %Y"))
         emails = mail_agent.fetch_unread(limit=limit, attachment_dir=attachment_dir, subject=subject)
-        logger.info("Setp1: Fetched %d emails from mail reader AI Agent  completed", len(emails))
+        logger.info("Step 1: Fetched %d emails from mail, reader Agent  completed", len(emails))
         if len(emails)<1:
             logger.info("No unread emails found. Skipping mail reader AI Agent execution.")
             return {"status": "No emails to process"}
@@ -123,12 +124,12 @@ def run_post_validation_flow_task():
             except Exception as exc:
                 logger.warning(f"Failed to mark email {getattr(email, 'id', None)} as read: {exc}")
     except Exception as exc:
-        logger.warning("Failed mail reader AI Agent to fetch emails : %s", exc)
+        logger.warning("Failed mail reader Agent to fetch emails : %s", exc)
         return {"error": str(exc)}
     
     folder_path = "data/Post_Validation_Data"
     if not os.path.exists(folder_path) or not os.listdir(folder_path):
-        logger.warning(f"No files found in {folder_path} by mail reader AI Agent.")
+        logger.warning(f"No files found in {folder_path} by mail reader Agent.")
         return {"error": f"No files found in {folder_path} for processing."}
     
     safe_name = os.listdir(settings.upload_dir+"/Post_validation_data/")[0]
@@ -137,32 +138,36 @@ def run_post_validation_flow_task():
         return {"error": "Only Excel files are supported (.xlsx, .xlsm, .xltx, .xltm)."}
 
 
+    # Step 2:Send file recived email
+    logger.info("Step 2: SendMail agent triggered successfully. File receipt confirmed. ............................")
+    send_text_email()
 
-    # Step 1: Remove red-highlighted rows
+
+    # Step 3: Remove red-highlighted rows
     filename = os.listdir(settings.upload_dir+"/Post_validation_data/")[0]
     source_path = os.path.join(settings.upload_dir, "Post_validation_data", filename)
     output_dir = settings.upload_dir
     try:
-        logger.info("Step 2: Clasification AI Agent remove_red_rows_from_excel started...........")
+        logger.info("Step 3: Clasification Agent remove_red_rows_from_excel started...........")
         cleaned_path = remove_red_rows_from_excel(
             input_file_path=source_path,
             output_dir=output_dir,
         )
-        logger.info("Step 2: Clasification AI Agent remove_red_rows_from_excel completed: %s", cleaned_path)
+        logger.info("Step 3: Clasification Agent remove_red_rows_from_excel completed: %s", cleaned_path)
     except Exception as exc:
-        logger.error("Step 1 failed: %s", exc)
-        return {"error": f" Step 2: Clasification AI Agent failed to remove_red_rows_from_excel: {exc}"}
+        logger.error("Step 3 failed: %s", exc)
+        return {"error": f" Step 3: Clasification Agent failed to remove_red_rows_from_excel: {exc}"}
 
-    # Step 2: SharePoint upload
+    # Step 4: SharePoint upload
     try:
-        logger.info("Step 3: File Upload AI Agent started................................")
+        logger.info("Step 4: File Upload Agent started................................")
         upload_result = sharepoint_upload_post_validation_records()
-        logger.info("Step 3: File Upload AI Agent completed: %s", upload_result)
+        logger.info("Step 4: File Upload Agent completed: %s", upload_result)
     except Exception as exc:
-        logger.error("Step 2 failed: %s", exc)
-        return {"error": f" Step 3: Upload AI Agent failed for sharepoint upload post validation records: {exc}"}
+        logger.error("Step 4 failed: %s", exc)
+        return {"error": f" Step 4: Upload Agent failed for sharepoint upload post validation records: {exc}"}
 
-    # Step 3: ServiceNow ticket
+    # Step 5: ServiceNow ticket
     payload = {
         "requested_by": "AMER\\USM3PA",
         "requested_for": "AMER\\USM3PA",
@@ -177,29 +182,29 @@ def run_post_validation_flow_task():
         "source": "RCC Tech Intake Form"
     }
     try:
-        logger.info("Step 4: Ticket initiator AI Agent started for PS Upload .......................")
+        logger.info("Step 5: Ticket initiator Agent started for PS Upload .......................")
         servicenow_result = create_ticket_service_now(payload)
-        logger.info("Step 4: Ticket initiator AI Agent completed PS Upload : %s", servicenow_result)
+        logger.info("Step 5: Ticket initiator Agent completed PS Upload : %s", servicenow_result)
     except Exception as exc:
-        logger.error("Step 4: Ticket initiator AI Agent PS Upload failed: %s", exc)
+        logger.error("Step 5: Ticket initiator Agent PS Upload failed: %s", exc)
         return {"error": f"create_ticket_service_now failed: {exc}"}
 
-    # Step 4: Post-validation send email
+    # Step 6: Post-validation send email
     try:
-        logger.info("Step 5: SendMail Ai Agent started for Post validation............................")
+        logger.info("Step 6: SendMail Agent started for Post validation............................")
         post_validation_send_email()
-        logger.info("Step 5: SendMail Ai Agent completed for Post validation ............................")
+        logger.info("Step 6: SendMail Agent completed for Post validation ............................")
     except Exception as exc:
-        logger.error("Step 5: SendMail Ai Agent failed for Post validation: %s", exc)
+        logger.error("Step 6: SendMail Agent failed for Post validation: %s", exc)
         return {"error": f"post_validation_send_email failed: {exc}"}
 
     # Schedule cleanup task to run after 6 hours (21600 seconds)
     try:
-        logger.info("Step 6: Cleanup AI Agent will started in 6 hours...................................")
+        logger.info("Step 7: Cleanup Agent will started in 6 hours...................................")
         run_cleanup_task.apply_async(countdown=21600)
-        logger.info("Step 6: Cleanup AI Agent completed local files cleanup.............................")
+        logger.info("Step 7: Cleanup Agent completed local files cleanup.............................")
     except Exception as exc:
-        logger.error(" Step 6: Cleanup AI Agent Failed to cleanup local files : %s", exc)
+        logger.error(" Step 7: Cleanup Agent Failed to cleanup local files : %s", exc)
 
     return {
         "status": "ok",
@@ -211,9 +216,9 @@ def run_post_validation_flow_task():
 
 @celery_app.task(name="app.tasks.run_cleanup_task")
 def run_cleanup_task():
-    logger.info("Starting Cleanup AI Agent for output folders................................................")
+    logger.info("Starting Cleanup Agent for output folders................................................")
     cleanup_all_outputs()
-    logger.info("Cleanup AI Agent for task completed.......................................................")
+    logger.info("Cleanup Agent for task completed.......................................................")
     return {"status": "cleanup completed"}
 
 
