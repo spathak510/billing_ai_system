@@ -461,5 +461,29 @@ def post_validation_send_email():
         "failed_count": len(failed_templates),
             "sent_templates": sent_templates,
                 "failed_templates": failed_templates,
-            }          
+            } 
+
+
+
+
+
+def send_text_email():
+    try:
+        mail_agent.send_email(
+            to_addresses=["sono.pathak2@ihg.com"],
+            subject=f"IHG University Post Validation check Initiated - {datetime.now().strftime('%B %Y')}",
+            body="Hi Team,\n\nWe have received a response from the Business, and the Agent has initiated post-validation checks.\n\n\n\nBest regards,\nGenWizard Automation Team ",
+            body_type="text"
+        )
+
+        return {
+            "status": "success"
+        }
+
+    except Exception as exc:
+        logger.error("post_validation_send_email failed: %s", exc)
+        return {
+            "status": "failed",
+            "error": str(exc)
+        }
         
