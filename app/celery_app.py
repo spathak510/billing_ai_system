@@ -28,7 +28,12 @@ def create_celery_app() -> Celery:
             "task": "app.tasks.run_post_validation_flow_task",
             "schedule": 5 * 60,  # every 5 minutes
         },
+        "billing-feedback-flow": {
+            "task": "app.tasks.feedback_process_task",
+            "schedule": 9 * 60,  # every 12 hours
+        },
     }
+
 
     return app
 
