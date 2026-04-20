@@ -26,7 +26,7 @@ def create_celery_app() -> Celery:
     app.conf.beat_schedule = {
         "billing-post-validation-flow": {
             "task": "app.tasks.run_post_validation_flow_task",
-            "schedule": 12 * 60 * 60,  # every 12 hours
+            "schedule": 5 * 60,  # every 5 minutes
         },
     }
 

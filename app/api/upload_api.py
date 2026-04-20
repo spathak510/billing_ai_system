@@ -21,7 +21,8 @@ from app.services.sharepoint_download_service import SharePointDownloadClient
 from app.services.sharepoint_move_service import SharePointMoveClient
 from app.services.sharepoint_upload_service import SharePointUploadClient
 from app.api.sharepoint_processor import sharepoint_upload_post_validation_records
-from app.api.mail_processor import post_validation_send_email  
+from app.api.mail_processor import post_validation_send_email 
+from app.agents.SmartFeedbackAgent import SmartFeedbackAgent 
 
 
 logger = logging.getLogger(__name__)
@@ -518,7 +519,7 @@ def register_api_routes(app: Flask) -> None:
             jsonify(
                 {
                     "status": "accepted",
-                    "message": "Background flow started",
+                    "message": "The IHG University Billing process has been initiated successfully. Please allow some time for completion - you will receive an email notification once the process is finished.",
                 }
             ),
             202,
@@ -790,3 +791,46 @@ def register_api_routes(app: Flask) -> None:
             ),
             200,
         )
+    
+
+     
+    @app.route("/run-email-agent", methods=["POST"])
+    def run_email_agent():
+        """
+        Trigger SmartFeedbackAgent from Postman
+ 
+        POST /run-email-agent
+        Body (raw JSON):
+        {
+            "limit": 10
+        }
+        """
+ 
+        try:
+            data = request.get_json(silent=True) or {}
+ 
+            limit = data.get("limit", 25)
+ 
+            api_key = os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                return jsonify({
+                    "status": "error",
+                    "message": "OPENAI_API_KEY not found in environment variables"
+                }), 500
+ 
+            agent = SmartFeedbackAgent(api_key=api_key)
+ 
+            replied_ids = agent.process_inbox(limit=limit)
+ 
+            return jsonify({
+                "status": "success",
+                "message": "Email agent executed successfully",
+                "replied_count": len(replied_ids),
+                "replied_email_ids": replied_ids
+            }), 200
+ 
+        except Exception as e:
+            return jsonify({
+                "status": "error",
+                "message": str(e)
+            }), 500
