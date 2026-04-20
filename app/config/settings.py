@@ -33,8 +33,8 @@ class Settings(BaseSettings):
 
     # Mail processor defaults
     amea_europe_mail_from: str = "sa_gwz.gapi@ihg.onmicrosoft.com"
-    amea_europe_mail_to: list[str] = ["sono.pathak2@ihg.com"]
-    amea_europe_mail_cc: list[str] = []
+    amea_europe_mail_to: list[str] = ["GWZ_IA_RPA@ihg.com"]
+    amea_europe_mail_cc: list[str] = ['sono.pathak2@ihg.com']
     amea_europe_mail_subject: str = "AMEA and Europe Billing Files"
     amea_europe_mail_template_name: str = "AMEA_and_Europe_Billing_Files"
     amea_europe_mail_body_type: str = "html"
