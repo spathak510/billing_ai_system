@@ -782,7 +782,7 @@ def register_api_routes(app: Flask) -> None:
     def vm_test_api():
         """Only for test use"""
         print("============================ API is Woking fine on the VM =============================")
-        
+        tasks.feedback_process_task()
         return (
             jsonify(
                 {
@@ -791,46 +791,3 @@ def register_api_routes(app: Flask) -> None:
             ),
             200,
         )
-    
-
-     
-    @app.route("/run-email-agent", methods=["POST"])
-    def run_email_agent():
-        """
-        Trigger SmartFeedbackAgent from Postman
- 
-        POST /run-email-agent
-        Body (raw JSON):
-        {
-            "limit": 10
-        }
-        """
- 
-        try:
-            data = request.get_json(silent=True) or {}
- 
-            limit = data.get("limit", 25)
- 
-            api_key = os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                return jsonify({
-                    "status": "error",
-                    "message": "OPENAI_API_KEY not found in environment variables"
-                }), 500
- 
-            agent = SmartFeedbackAgent(api_key=api_key)
- 
-            replied_ids = agent.process_inbox(limit=limit)
- 
-            return jsonify({
-                "status": "success",
-                "message": "Email agent executed successfully",
-                "replied_count": len(replied_ids),
-                "replied_email_ids": replied_ids
-            }), 200
- 
-        except Exception as e:
-            return jsonify({
-                "status": "error",
-                "message": str(e)
-            }), 500

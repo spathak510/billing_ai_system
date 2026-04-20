@@ -13,9 +13,10 @@ from app.services.cleanup_service import cleanup_all_outputs
 from app.api.sharepoint_processor import sharepoint_download, sharepoint_upload
 from app.agents.cleaning_agent import cleaning_data_prosessing
 from app.services.excel_filter_service import remove_red_rows_from_excel
-from app.api.sharepoint_processor import sharepoint_upload_post_validation_records
+from app.api.sharepoint_processor import sharepoint_upload_post_validation_records, sharepoint_download_history_data
 from app.api.mail_processor import post_validation_send_email, send_text_email
 from app.agents.mail_reader_agent import MailReaderAgent
+from app.agents.SmartFeedbackAgent import SmartFeedbackAgent
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +218,59 @@ Note: Please do not make any changes to this ticket, as it will be automatically
         "upload_result": str(upload_result),
         "servicenow_result": str(servicenow_result),
     }
+
+@celery_app.task(name="app.tasks.feedback_process")
+def feedback_process_task():
+        """Test SmartFeedbackAgent response generation with a sample email body."""
+        feedback = SmartFeedbackAgent()
+        
+        try:
+            #Step1: Fetched un read mails from the mailbox using mail agent
+            logger.info("Step 1: MailBox reader Agent started.......................................")
+            emails = mail_agent.fetch_unread(limit=1)
+            print("Fetched Emails:", emails)
+            if len(emails)<1:
+                logger.info("No unread emails found. Skipping mail reader AI Agent execution.")
+                return {"status": "No emails to process"}
+            
+            # Mark each email as read after processing
+            for email in emails:
+                try:
+                    mail_agent._client.mark_as_read(email.id)
+                except Exception as exc:
+                    logger.warning(f"Failed to mark email {getattr(email, 'id', None)} as read: {exc}")
+            logger.info("Step 1: MailBox reader Agent completed.......................................%s", len(emails))
+
+            #Step2: Download files from SharePoint using sharepoint agent, as feedback agent needs to access the history files to classify the email and extract order number
+            logger.info("Step 2: Files download from SharePoint Agent started.......................................")  
+            download_response = sharepoint_download_history_data()
+            logger.info("Step 2: Files download from SharePoint Agent completed.......................................%s", download_response)
+
+            #Step3: Mail classification using smart feedback agent
+            logger.info("Step 3: Feedback Agent order number extraction started.......................................")
+            response = feedback.search_order_number(emails[0])
+            if response['status'] == 'success':
+                print("Extracted Order Number:", response)
+                logger.info("Step 3: Feedback Agent order number extraction completed.......................................%s", response)
+
+                #Step4: Uploading the file on sharepoint using sharepoint agent, as feedback agent needs to access the history files to classify the email and extract order number
+                logger.info("Step 4: File Upload Agent started................................")    
+                remote_path = f"/feedback"
+                local_dir = "feedback/feedback_data"
+                upload_result = sharepoint_upload(remote_path, local_dir)
+                logger.info("Step 4: File Upload Agent completed: %s", upload_result)
+
+            return {
+                    "status": "success",
+                    "message": "Feedback process executed successfully",
+                    "response": response,
+                }
+        except Exception as exc:
+            print("An error occurred while processing emails:", exc)
+            return {
+                    "status": "error",
+                    "message": f"An error occurred: {str(exc)}",
+                }   
 
 
 @celery_app.task(name="app.tasks.run_cleanup_task")
