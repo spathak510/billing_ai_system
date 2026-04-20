@@ -518,7 +518,7 @@ def register_api_routes(app: Flask) -> None:
             jsonify(
                 {
                     "status": "accepted",
-                    "message": "Background flow started",
+                    "message": "The IHG University Billing process has been initiated successfully. Please allow some time for completion - you will receive an email notification once the process is finished.",
                 }
             ),
             202,
