@@ -49,10 +49,10 @@ def run_clean_data_flow_task():
         
         logger.info("Step 1: Files download from SharePoint Agent started.....................")
         attempt = 1
-        download_result = sharepoint_download()
+        download_result = sharepoint_download('Cleaning_Agent')
         if attempt < 2 and download_result.get("status") != "Monthly report files downloaded. History CROP files downloaded. History NON-CROP files downloaded. ":
             attempt += 1
-            download_result = sharepoint_download() # retry once if there was an error, as SharePoint can be flaky. If it fails again, we will log the error and continue with the flow, as the cleaning process can still be useful for any files that were downloaded successfully.
+            download_result = sharepoint_download('Cleaning_Agent') # retry once if there was an error, as SharePoint can be flaky. If it fails again, we will log the error and continue with the flow, as the cleaning process can still be useful for any files that were downloaded successfully.
         logger.info("Step 1: Files download from SharePoint Agent completed: %s", download_result)
 
         logger.info("Step 2: Cleaning Agent started..............................")
@@ -146,32 +146,41 @@ def run_post_validation_flow_task():
     logger.info("Step 2: SendMail agent triggered successfully. File receipt confirmed. ............................")
     send_text_email()
 
+    try:
+        # Step 3: Download Manual entry file from sharepoint
+        logger.info("Step 3: Files download from SharePoint Agent started.....................")
+        download_result = sharepoint_download('Post_validation_Agent')
+        logger.info("Step 3: Files download from SharePoint Agent completed: %s", download_result)
+    except Exception as exc:
+        logger.error("Step 3: Files download from SharePoint Agent failed: %s", exc)
+        # Do not stop the flow if file not found or error occurs, just log and continue
+        pass
 
-    # Step 3: Remove red-highlighted rows
+    # Step 4: Remove red-highlighted rows
     filename = os.listdir(settings.upload_dir+"/Post_validation_data/")[0]
     source_path = os.path.join(settings.upload_dir, "Post_validation_data", filename)
     output_dir = settings.upload_dir
     try:
-        logger.info("Step 3: Clasification Agent remove_red_rows_from_excel started...........")
+        logger.info("Step 4: Clasification Agent remove_red_rows_from_excel started...........")
         cleaned_path = remove_red_rows_from_excel(
             input_file_path=source_path,
             output_dir=output_dir,
         )
-        logger.info("Step 3: Clasification Agent remove_red_rows_from_excel completed: %s", cleaned_path)
-    except Exception as exc:
-        logger.error("Step 3 failed: %s", exc)
-        return {"error": f" Step 3: Clasification Agent failed to remove_red_rows_from_excel: {exc}"}
-
-    # Step 4: SharePoint upload
-    try:
-        logger.info("Step 4: File Upload Agent started................................")
-        upload_result = sharepoint_upload_post_validation_records()
-        logger.info("Step 4: File Upload Agent completed: %s", upload_result)
+        logger.info("Step 4: Clasification Agent remove_red_rows_from_excel completed: %s", cleaned_path)
     except Exception as exc:
         logger.error("Step 4 failed: %s", exc)
-        return {"error": f" Step 4: Upload Agent failed for sharepoint upload post validation records: {exc}"}
+        return {"error": f" Step 4: Clasification Agent failed to remove_red_rows_from_excel: {exc}"}
 
-    # Step 5: ServiceNow ticket
+    # Step 5: SharePoint upload
+    try:
+        logger.info("Step 5: File Upload Agent started................................")
+        upload_result = sharepoint_upload_post_validation_records()
+        logger.info("Step 5: File Upload Agent completed: %s", upload_result)
+    except Exception as exc:
+        logger.error("Step 5 failed: %s", exc)
+        return {"error": f" Step 5: Upload Agent failed for sharepoint upload post validation records: {exc}"}
+
+    # Step 6: ServiceNow ticket
     payload = {
         "requested_by": "AMER\\USM3PA",
         "requested_for": "AMER\\USM3PA",
@@ -188,29 +197,29 @@ Note: Please do not make any changes to this ticket, as it will be automatically
         "source": "RCC Tech Intake Form"
     }
     try:
-        logger.info("Step 5: Ticket initiator Agent started for PS Upload .......................")
+        logger.info("Step 6: Ticket initiator Agent started for PS Upload .......................")
         servicenow_result = create_ticket_service_now(payload)
-        logger.info("Step 5: Ticket initiator Agent completed PS Upload : %s", servicenow_result)
+        logger.info("Step 6: Ticket initiator Agent completed PS Upload : %s", servicenow_result)
     except Exception as exc:
-        logger.error("Step 5: Ticket initiator Agent PS Upload failed: %s", exc)
+        logger.error("Step 6: Ticket initiator Agent PS Upload failed: %s", exc)
         return {"error": f"create_ticket_service_now failed: {exc}"}
 
-    # Step 6: Post-validation send email
+    # Step 7: Post-validation send email
     try:
-        logger.info("Step 6: SendMail Agent started for Post validation............................")
+        logger.info("Step 7: SendMail Agent started for Post validation............................")
         post_validation_send_email()
-        logger.info("Step 6: SendMail Agent completed for Post validation ............................")
+        logger.info("Step 7: SendMail Agent completed for Post validation ............................")
     except Exception as exc:
-        logger.error("Step 6: SendMail Agent failed for Post validation: %s", exc)
+        logger.error("Step 7: SendMail Agent failed for Post validation: %s", exc)
         return {"error": f"post_validation_send_email failed: {exc}"}
 
     # Schedule cleanup task to run after 6 hours (21600 seconds)
     try:
-        logger.info("Step 7: Cleanup Agent will started in 6 minutes...................................")
+        logger.info("Step 8: Cleanup Agent will started in 6 minutes...................................")
         run_cleanup_task.apply_async(countdown=3600)
-        logger.info("Step 7: Cleanup Agent completed local files cleanup.............................")
+        logger.info("Step 8: Cleanup Agent completed local files cleanup.............................")
     except Exception as exc:
-        logger.error(" Step 7: Cleanup Agent Failed to cleanup local files : %s", exc)
+        logger.error(" Step 8: Cleanup Agent Failed to cleanup local files : %s", exc)
 
     return {
         "status": "ok",

@@ -427,13 +427,45 @@ def remove_red_rows_from_excel(
             if not any(_is_red_fill(cell) for cell in row):
                 output_sheet.append([cell.value for cell in row])
 
+
     output_path = target_dir / f"cleaned_no_red_{source_path.stem}.xlsx"
     output_path = _next_available_path(output_path)
     output_workbook.save(output_path)
 
-    corp_noncorp_split = _split_user_type_collections(cleaned_workbook=output_workbook, source_stem=source_path.stem)
-    region_output_paths = _split_region_collections(cleaned_workbook=output_workbook, source_stem=source_path.stem)
-    _split_intercompany_collections(cleaned_workbook=output_workbook, source_stem=source_path.stem)
+    # === NEW: Copy data from Manual_entry file(s) if any exist ===
+    manual_entry_dir = Path(settings.upload_dir) / "Manual_entry" if hasattr(settings, "upload_dir") else Path("data/Manual_entry")
+    manual_files = list(manual_entry_dir.glob("*.xlsx"))
+    if manual_files:
+        from openpyxl import load_workbook as _load_wb
+        # Use the first file found (can be extended to merge all if needed)
+        manual_file = manual_files[0]
+        manual_wb = _load_wb(manual_file)
+        manual_ws = manual_wb.active
+        # Open the cleaned file again for appending
+        cleaned_wb = load_workbook(output_path)
+        cleaned_ws = cleaned_wb.active
+        # Find the header row in manual_ws (assume first row)
+        manual_header = [cell.value for cell in next(manual_ws.iter_rows(min_row=1, max_row=1))]
+        cleaned_header = [cell.value for cell in next(cleaned_ws.iter_rows(min_row=1, max_row=1))]
+        # Map columns by header name
+        manual_col_map = {str(h).strip().upper(): i for i, h in enumerate(manual_header)}
+        cleaned_col_map = {str(h).strip().upper(): i for i, h in enumerate(cleaned_header)}
+        # For each data row in manual_ws, append to cleaned_ws in correct order
+        for row in manual_ws.iter_rows(min_row=2, max_row=manual_ws.max_row, values_only=True):
+            # Build row for cleaned_ws
+            new_row = [None] * len(cleaned_header)
+            for h, idx in cleaned_col_map.items():
+                if h in manual_col_map:
+                    val = row[manual_col_map[h]]
+                    new_row[idx] = val
+            cleaned_ws.append(new_row)
+        cleaned_wb.save(output_path)
+        logger.info(f"Appended data from Manual_entry file {manual_file} to cleaned file {output_path}")
+
+    # Continue with further processing
+    corp_noncorp_split = _split_user_type_collections(cleaned_workbook=load_workbook(output_path), source_stem=source_path.stem)
+    region_output_paths = _split_region_collections(cleaned_workbook=load_workbook(output_path), source_stem=source_path.stem)
+    _split_intercompany_collections(cleaned_workbook=load_workbook(output_path), source_stem=source_path.stem)
 
     try:
         generate_amer_peoplesoft_output(input_file_path=str(output_path))

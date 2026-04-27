@@ -2,6 +2,7 @@ from datetime import datetime
 import logging
 from pathlib import Path
 import re, os
+import fnmatch
 
 from app.config.settings import settings
 from app.agents.mail_reader_agent import MailReaderAgent
@@ -49,10 +50,17 @@ TEMPLATE_PAYLOAD_PROFILES: dict[str, dict[str, object]] = {
         ],
     },
     "myLearning training billing file GC - January 2026.html": {
-        "subject": "myLearning training billing file GC - {month_year}",
+        "subject": "myLearning training billing file GC NONCORP - {month_year}",
         "message": "",
         "attachments": [
-            {"path": "Region_Wise_Split/GC_*.xlsx", "name": "GC_NO_CORP_PAID_{month_year}.xlsx"},
+            {"path": "Corp_NonCorp_Split/GC_NONCROP_*.xlsx", "name": "GC_NON_CORP_PAID_{month_year}.xlsx"},
+        ],
+    },
+    "myLearning training billing file GC CORP - January 2026.html": {
+        "subject": "myLearning training billing file GC CORP - {month_year}",
+        "message": "",
+        "attachments": [
+            {"path": "Corp_NonCorp_Split/GC_CROP_*.xlsx", "name": "GC_CORP_PAID_{month_year}.xlsx"},
         ],
     },
 }
@@ -142,6 +150,11 @@ def _build_template_variables(template_name: str, profile: dict[str, object], no
         "recipient_name": "Team",
         "message": str(profile.get("message", "")).format(month_day=now.strftime("%B%d")),
     }
+    
+    if fnmatch.fnmatch(template_name, "myLearning training billing file GC *.html"):
+        # month_year and month_name will be add
+        template_variables["month_year"] = now.strftime("%B %Y")
+        template_variables["month_name"] = now.strftime("%B")
 
     if template_name == "MyLearning Billing files for February 2026.html":
         corp_file = _resolve_latest_matching_file("AMER/AMER_Output", "CORP_BILLING_*.csv")
@@ -173,7 +186,7 @@ def _check_attachment_files_exist(raw_attachments: list[object]) -> bool:
             continue
 
         path = _resolve_attachment_base_path(raw_path)
-        if raw_path.startswith("Region_Wise_Split/GC_") and any(token in raw_path for token in ("*", "?", "[")):
+        if raw_path.startswith("Corp_NonCorp_Split/GC_") and any(token in raw_path for token in ("*", "?", "[")):
             matching_files = sorted(
                 (candidate for candidate in path.parent.glob(path.name) if candidate.is_file()),
                 key=lambda item: item.stat().st_mtime,
@@ -220,7 +233,7 @@ def _resolve_mail_attachments(raw_attachments: list[object]) -> list[object]:
             continue
 
         path = _resolve_attachment_base_path(raw_path)
-        if raw_path.startswith("Region_Wise_Split/GC_") and any(token in raw_path for token in ("*", "?", "[")):
+        if raw_path.startswith("Corp_NonCorp_Split/GC_") and any(token in raw_path for token in ("*", "?", "[")):
             matching_files = sorted(
                 (candidate for candidate in path.parent.glob(path.name) if candidate.is_file()),
                 key=lambda item: item.stat().st_mtime,
@@ -292,7 +305,9 @@ def _build_payload(template_name: str, overrides: dict | None = None) -> dict:
     }
     subject_template = str(overrides.get("subject") or profile.get("subject") or settings.amea_europe_mail_subject)
     subject = subject_template.format(**subject_format_values)
-    subject = f"{subject} - {now.strftime('%B %Y')}"
+    # Only append month/year if not already present in the subject
+    if ("{month_year}" not in subject_template and "{month_short_yy}" not in subject_template and now.strftime("%B %Y") not in subject):
+        subject = f"{subject} - {now.strftime('%B %Y')}"
 
     template_variables = _build_template_variables(template_name, profile, now)
     raw_template_variables = overrides.get("template_variables")
