@@ -21,8 +21,9 @@ from app.services.sharepoint_download_service import SharePointDownloadClient
 from app.services.sharepoint_move_service import SharePointMoveClient
 from app.services.sharepoint_upload_service import SharePointUploadClient
 from app.api.sharepoint_processor import sharepoint_upload_post_validation_records
-from app.api.mail_processor import post_validation_send_email 
-from app.agents.SmartFeedbackAgent import SmartFeedbackAgent 
+from app.api.mail_processor import post_validation_send_email
+from app.agents.SmartFeedbackAgent import SmartFeedbackAgent
+from app.agents.comparison_agent import run_monthly_comparison
 
 
 logger = logging.getLogger(__name__)
@@ -38,12 +39,14 @@ _sharepoint_download_client: SharePointDownloadClient | None = None
 _sharepoint_upload_client: SharePointUploadClient | None = None
 _sharepoint_move_client: SharePointMoveClient | None = None
 
+
 def _get_sharepoint_download_client() -> SharePointDownloadClient:
     """Get or create SharePoint download client (lazy initialization)."""
     global _sharepoint_download_client
     if _sharepoint_download_client is None:
         _sharepoint_download_client = SharePointDownloadClient()
     return _sharepoint_download_client
+
 
 def _get_sharepoint_upload_client() -> SharePointUploadClient:
     """Get or create SharePoint upload client (lazy initialization)."""
@@ -52,6 +55,7 @@ def _get_sharepoint_upload_client() -> SharePointUploadClient:
         _sharepoint_upload_client = SharePointUploadClient()
     return _sharepoint_upload_client
 
+
 def _get_sharepoint_move_client() -> SharePointMoveClient:
     """Get or create SharePoint move client (lazy initialization)."""
     global _sharepoint_move_client
@@ -59,14 +63,19 @@ def _get_sharepoint_move_client() -> SharePointMoveClient:
         _sharepoint_move_client = SharePointMoveClient()
     return _sharepoint_move_client
 
+
 ALLOWED_EXCEL_ATTACHMENT_EXTENSIONS = {".xlsx", ".xlsm", ".csv"}
 ALLOWED_EMAIL_BODY_TYPES = {"text", "html"}
 
 
-def _normalize_email_addresses(value, field_name: str, *, required: bool = False) -> list[str] | None:
+def _normalize_email_addresses(
+    value, field_name: str, *, required: bool = False
+) -> list[str] | None:
     if value in (None, "", []):
         if required:
-            raise ValueError(f"'{field_name}' must be a non-empty email address or list of email addresses.")
+            raise ValueError(
+                f"'{field_name}' must be a non-empty email address or list of email addresses."
+            )
         return None
 
     if isinstance(value, str):
@@ -80,10 +89,14 @@ def _normalize_email_addresses(value, field_name: str, *, required: bool = False
                 )
             normalized.append(item.strip())
     else:
-        raise ValueError(f"'{field_name}' must be an email address string or a list of email addresses.")
+        raise ValueError(
+            f"'{field_name}' must be an email address string or a list of email addresses."
+        )
 
     if required and not normalized:
-        raise ValueError(f"'{field_name}' must be a non-empty email address or list of email addresses.")
+        raise ValueError(
+            f"'{field_name}' must be a non-empty email address or list of email addresses."
+        )
     return normalized or None
 
 
@@ -104,7 +117,9 @@ def _normalize_email_attachments(raw_attachments) -> list[dict] | None:
             if name is None and isinstance(path, str):
                 name = os.path.basename(path)
         else:
-            raise ValueError(f"Attachment at index {idx} must be a path string or an object.")
+            raise ValueError(
+                f"Attachment at index {idx} must be a path string or an object."
+            )
 
         if not isinstance(path, str) or not path.strip():
             raise ValueError(f"Attachment at index {idx} is missing a valid 'path'.")
@@ -114,7 +129,9 @@ def _normalize_email_attachments(raw_attachments) -> list[dict] | None:
         actual_name = os.path.basename(path)
         actual_ext = os.path.splitext(actual_name)[1].lower()
         if actual_ext not in ALLOWED_EXCEL_ATTACHMENT_EXTENSIONS:
-            raise ValueError("Only Excel read/write attachment files are supported (.xlsx, .xlsm, .csv).")
+            raise ValueError(
+                "Only Excel read/write attachment files are supported (.xlsx, .xlsm, .csv)."
+            )
 
         if name is None:
             name = actual_name
@@ -139,19 +156,33 @@ def _extract_incident_id(servicenow_result: dict | None) -> str | None:
 
     response_body = servicenow_result.get("response")
     if isinstance(response_body, dict):
-        for key in ("incident_id", "incidentId", "incidentID", "number", "ticket_id", "ticketId"):
+        for key in (
+            "incident_id",
+            "incidentId",
+            "incidentID",
+            "number",
+            "ticket_id",
+            "ticketId",
+        ):
             value = response_body.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()
 
         result_payload = response_body.get("result")
         if isinstance(result_payload, dict):
-            for key in ("incident_id", "incidentId", "incidentID", "number", "ticket_id", "ticketId"):
+            for key in (
+                "incident_id",
+                "incidentId",
+                "incidentID",
+                "number",
+                "ticket_id",
+                "ticketId",
+            ):
                 value = result_payload.get(key)
                 if isinstance(value, str) and value.strip():
                     return value.strip()
 
-    return None    
+    return None
 
 
 def register_api_routes(app: Flask) -> None:
@@ -212,10 +243,6 @@ def register_api_routes(app: Flask) -> None:
             download_name=safe_name,
         )
 
-
-
-
-
     @app.get("/api/v1/emails")
     def list_emails():
         """Return unread emails from the mailbox (or local fallback)."""
@@ -233,7 +260,9 @@ def register_api_routes(app: Flask) -> None:
             try:
                 mail_agent._client.mark_as_read(email.id)
             except Exception as exc:
-                logger.warning(f"Failed to mark email {getattr(email, 'id', None)} as read: {exc}")
+                logger.warning(
+                    f"Failed to mark email {getattr(email, 'id', None)} as read: {exc}"
+                )
         return jsonify(
             [
                 {
@@ -324,14 +353,23 @@ def register_api_routes(app: Flask) -> None:
             return jsonify({"error": "'subject' is required."}), 400
 
         try:
-            to_addresses = _normalize_email_addresses(data.get("to"), "to", required=True)
+            to_addresses = _normalize_email_addresses(
+                data.get("to"), "to", required=True
+            )
             cc_addresses = _normalize_email_addresses(data.get("cc"), "cc")
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
         from_address = data.get("from")
-        if from_address is not None and (not isinstance(from_address, str) or not from_address.strip()):
-            return jsonify({"error": "'from' must be a non-empty email address when provided."}), 400
+        if from_address is not None and (
+            not isinstance(from_address, str) or not from_address.strip()
+        ):
+            return (
+                jsonify(
+                    {"error": "'from' must be a non-empty email address when provided."}
+                ),
+                400,
+            )
         if isinstance(from_address, str):
             from_address = from_address.strip()
 
@@ -345,7 +383,12 @@ def register_api_routes(app: Flask) -> None:
         elif isinstance(raw_template_variables, dict):
             template_variables = raw_template_variables
         else:
-            return jsonify({"error": "'template_variables' must be an object when provided."}), 400
+            return (
+                jsonify(
+                    {"error": "'template_variables' must be an object when provided."}
+                ),
+                400,
+            )
 
         recipient_name = template_variables.get("recipient_name") or "Team"
         message = template_variables.get("message") or ""
@@ -353,21 +396,36 @@ def register_api_routes(app: Flask) -> None:
         if body is not None and not isinstance(body, str):
             return jsonify({"error": "'body' must be a string when provided."}), 400
         if body_type not in ALLOWED_EMAIL_BODY_TYPES:
-            return jsonify({"error": "'body_type' must be either 'text' or 'html'."}), 400
+            return (
+                jsonify({"error": "'body_type' must be either 'text' or 'html'."}),
+                400,
+            )
         if template_name is not None and not isinstance(template_name, str):
-            return jsonify({"error": "'template_name' must be a string when provided."}), 400
+            return (
+                jsonify({"error": "'template_name' must be a string when provided."}),
+                400,
+            )
         if isinstance(template_name, str):
             template_name = template_name.strip()
             if template_name and not os.path.splitext(template_name)[1]:
                 template_name = f"{template_name}.html"
         if body is not None and template_name:
-            return jsonify({"error": "Provide either 'body' or 'template_name', not both."}), 400
+            return (
+                jsonify(
+                    {"error": "Provide either 'body' or 'template_name', not both."}
+                ),
+                400,
+            )
         if template_name:
-            template_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "templates")
+            template_dir = os.path.join(
+                os.path.dirname(os.path.dirname(__file__)), "templates"
+            )
             template_path = os.path.join(template_dir, template_name)
             if not os.path.isfile(template_path):
                 available_templates = sorted(
-                    item for item in os.listdir(template_dir) if item.lower().endswith(".html")
+                    item
+                    for item in os.listdir(template_dir)
+                    if item.lower().endswith(".html")
                 )
                 return (
                     jsonify(
@@ -403,14 +461,14 @@ def register_api_routes(app: Flask) -> None:
             return jsonify({"error": str(exc)}), 500
 
         return jsonify({"status": "sent", "to": to_addresses, "subject": subject}), 200
-    
-
 
     @app.post("/api/v1/post_validation_send_email")
     def post_validation_send_email_api():
         """Send post-validation emails for all templates one by one."""
 
-        response = post_validation_send_email()  # Run synchronously for now, can be made async if needed
+        response = (
+            post_validation_send_email()
+        )  # Run synchronously for now, can be made async if needed
         return (
             jsonify(
                 {
@@ -439,7 +497,7 @@ def register_api_routes(app: Flask) -> None:
                 {
                     "status": "accepted",
                     "message": "Background flow started",
-                }    
+                }
             ),
             200,
         )
@@ -464,9 +522,15 @@ def register_api_routes(app: Flask) -> None:
         if filename is not None and not isinstance(filename, str):
             return jsonify({"error": "'filename' must be a string when provided."}), 400
         if input_file_path is not None and not isinstance(input_file_path, str):
-            return jsonify({"error": "'input_file_path' must be a string when provided."}), 400
+            return (
+                jsonify({"error": "'input_file_path' must be a string when provided."}),
+                400,
+            )
         if output_stem is not None and not isinstance(output_stem, str):
-            return jsonify({"error": "'output_stem' must be a string when provided."}), 400
+            return (
+                jsonify({"error": "'output_stem' must be a string when provided."}),
+                400,
+            )
 
         source_path = input_file_path
         if not source_path and filename:
@@ -482,7 +546,14 @@ def register_api_routes(app: Flask) -> None:
             ext = ".xlsx"
 
         if ext not in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
-            return jsonify({"error": "Only Excel files are supported (.xlsx, .xlsm, .xltx, .xltm)."}), 400
+            return (
+                jsonify(
+                    {
+                        "error": "Only Excel files are supported (.xlsx, .xlsm, .xltx, .xltm)."
+                    }
+                ),
+                400,
+            )
 
         try:
             result = generate_amer_peoplesoft_output(
@@ -512,8 +583,7 @@ def register_api_routes(app: Flask) -> None:
         No request body is required. Files are downloaded from the configured
         SharePoint folder into the local data directory.
         """
-        tasks.run_clean_data_flow_task.delay()
-        
+        tasks.run_clean_data_flow_task()
 
         return (
             jsonify(
@@ -545,13 +615,22 @@ def register_api_routes(app: Flask) -> None:
         overwrite = data.get("overwrite", True)
 
         if not remote_path or not isinstance(remote_path, str):
-            return jsonify({"error": "'remote_path' is required and must be a string."}), 400
+            return (
+                jsonify({"error": "'remote_path' is required and must be a string."}),
+                400,
+            )
         if local_file_path is not None and not isinstance(local_file_path, str):
-            return jsonify({"error": "'local_file_path' must be a string when provided."}), 400
+            return (
+                jsonify({"error": "'local_file_path' must be a string when provided."}),
+                400,
+            )
         if filename is not None and not isinstance(filename, str):
             return jsonify({"error": "'filename' must be a string when provided."}), 400
         if not isinstance(overwrite, bool):
-            return jsonify({"error": "'overwrite' must be a boolean when provided."}), 400
+            return (
+                jsonify({"error": "'overwrite' must be a boolean when provided."}),
+                400,
+            )
 
         remote_path = remote_path.strip().lstrip("/")
         if not remote_path:
@@ -562,15 +641,24 @@ def register_api_routes(app: Flask) -> None:
             safe_name = os.path.basename(filename)
             output_candidate = os.path.join(settings.output_dir, safe_name)
             upload_candidate = os.path.join(settings.upload_dir, safe_name)
-            source_path = output_candidate if os.path.isfile(output_candidate) else upload_candidate
+            source_path = (
+                output_candidate
+                if os.path.isfile(output_candidate)
+                else upload_candidate
+            )
 
         if not source_path:
-            return jsonify({"error": "Provide either 'local_file_path' or 'filename'."}), 400
+            return (
+                jsonify({"error": "Provide either 'local_file_path' or 'filename'."}),
+                400,
+            )
         if not os.path.isfile(source_path):
             return jsonify({"error": f"Local file not found: {source_path}"}), 404
 
         try:
-            result = _get_sharepoint_upload_client().upload_file(source_path, remote_path, overwrite=overwrite)
+            result = _get_sharepoint_upload_client().upload_file(
+                source_path, remote_path, overwrite=overwrite
+            )
         except Exception as exc:
             logger.error("sharepoint_upload_api failed: %s", exc)
             return jsonify({"error": str(exc)}), 500
@@ -586,7 +674,7 @@ def register_api_routes(app: Flask) -> None:
             ),
             200,
         )
-    
+
     @app.post("/api/v1/sharepoint/upload/validation_records")
     def sharepoint_upload_post_validation_record_api():
         """Upload a local file to SharePoint.
@@ -605,7 +693,7 @@ def register_api_routes(app: Flask) -> None:
         except Exception as exc:
             logger.error("sharepoint_upload_post_validation_record_api failed: %s", exc)
             return jsonify({"error": str(exc)}), 500
-        
+
         return (
             jsonify(
                 {
@@ -614,7 +702,6 @@ def register_api_routes(app: Flask) -> None:
             ),
             200,
         )
-
 
     @app.post("/api/v1/sharepoint/move")
     def sharepoint_move_api():
@@ -639,11 +726,22 @@ def register_api_routes(app: Flask) -> None:
         overwrite = data.get("overwrite", True)
 
         if not source_path or not isinstance(source_path, str):
-            return jsonify({"error": "'source_path' is required and must be a string."}), 400
+            return (
+                jsonify({"error": "'source_path' is required and must be a string."}),
+                400,
+            )
         if not destination_path or not isinstance(destination_path, str):
-            return jsonify({"error": "'destination_path' is required and must be a string."}), 400
+            return (
+                jsonify(
+                    {"error": "'destination_path' is required and must be a string."}
+                ),
+                400,
+            )
         if not isinstance(overwrite, bool):
-            return jsonify({"error": "'overwrite' must be a boolean when provided."}), 400
+            return (
+                jsonify({"error": "'overwrite' must be a boolean when provided."}),
+                400,
+            )
 
         source_path = source_path.strip().lstrip("/")
         destination_path = destination_path.strip().lstrip("/")
@@ -758,30 +856,33 @@ def register_api_routes(app: Flask) -> None:
         folder_name = data.get("folder_name")
 
         if not folder_name or not isinstance(folder_name, str):
-            return jsonify(
-                {
-                    "error": "'folder_name' is required and must be a string.",
-                    "status": "error",
-                }
-            ), 400
+            return (
+                jsonify(
+                    {
+                        "error": "'folder_name' is required and must be a string.",
+                        "status": "error",
+                    }
+                ),
+                400,
+            )
 
         try:
             result = cleanup_specific_folder(folder_name.strip())
         except Exception as exc:
-            logger.error("cleanup_folder_api failed for folder '%s': %s", folder_name, exc)
+            logger.error(
+                "cleanup_folder_api failed for folder '%s': %s", folder_name, exc
+            )
             return jsonify({"error": str(exc), "status": "error"}), 500
 
         status_code = 200 if result.get("status") == "success" else 500
         return jsonify(result), status_code
-    
-
-
-
 
     @app.post("/api/v1/test_api")
     def vm_test_api():
         """Only for test use"""
-        print("============================ API is Woking fine on the VM =============================")
+        print(
+            "============================ API is Woking fine on the VM ============================="
+        )
         tasks.feedback_process_task()
         return (
             jsonify(
@@ -791,3 +892,37 @@ def register_api_routes(app: Flask) -> None:
             ),
             200,
         )
+
+    @app.post("/api/v1/comparison/run")
+    def run_comparison_agent_api():
+        """Run the monthly comparison agent independently for validation/testing."""
+        data = request.get_json(force=True, silent=True) or {}
+        source_file_path = data.get("source_file_path")
+        output_file_path = data.get("output_file_path")
+        reference_file_path = data.get("reference_file_path")
+
+        if source_file_path is not None and not isinstance(source_file_path, str):
+            return (
+                jsonify(
+                    {"error": "'source_file_path' must be a string when provided."}
+                ),
+                400,
+            )
+        if output_file_path is not None and not isinstance(output_file_path, str):
+            return (
+                jsonify(
+                    {"error": "'output_file_path' must be a string when provided."}
+                ),
+                400,
+            )
+
+        try:
+            result = run_monthly_comparison(
+                source_file_path=source_file_path,
+                output_file_path=output_file_path,
+            )
+        except Exception as exc:
+            logger.error("run_comparison_agent_api failed: %s", exc)
+            return jsonify({"error": str(exc), "status": "error"}), 500
+
+        return jsonify(result), 200
