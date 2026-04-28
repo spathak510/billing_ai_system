@@ -17,6 +17,8 @@ from app.services.gaf_apac_processor_service import generate_gaf_apac_output
 from app.services.rir_apac_processor_service import generate_rir_apac_output
 from app.services.jrf_processor_service import generate_jrf_output
 from app.services.peoplesoft_output_service import generate_amer_peoplesoft_output
+from app.services.apac_gc_intewrcompany_input_service import generate_input_apac_gc_intewrcompany
+from app.services.emeaa_intercompany_input_service import generate_input_emeaa_intercompany_result
 
 logger = logging.getLogger(__name__)
 
@@ -48,127 +50,263 @@ def _find_column(header_row: list[object], column_name: str) -> int | None:
 
 
 def _split_user_type_collections(cleaned_workbook: Workbook, source_stem: str) -> None:
-    output_dir = Path(settings.output_dir)
+    from copy import deepcopy
+    import re
+    output_dir = Path(settings.output_dir) / "Corp_NonCorp_Split"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    corp_workbook = Workbook()
-    non_corp_workbook = Workbook()
-    corp_workbook.remove(corp_workbook.active)
-    non_corp_workbook.remove(non_corp_workbook.active)
+    # Helper to create a new workbook with a single sheet and header
+    def create_collection(header, title):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = title
+        ws.append(header)
+        return wb, ws
 
-    for cleaned_sheet in cleaned_workbook.worksheets:
-        corp_sheet = corp_workbook.create_sheet(title=cleaned_sheet.title)
-        non_corp_sheet = non_corp_workbook.create_sheet(title=cleaned_sheet.title)
-
-        rows = list(
-            cleaned_sheet.iter_rows(
-                min_row=1,
-                max_row=cleaned_sheet.max_row,
-                max_col=cleaned_sheet.max_column,
-                values_only=True,
-            )
+    # We'll process only the first sheet for simplicity (can be extended for multi-sheet)
+    cleaned_sheet = cleaned_workbook.worksheets[0]
+    rows = list(
+        cleaned_sheet.iter_rows(
+            min_row=1,
+            max_row=cleaned_sheet.max_row,
+            max_col=cleaned_sheet.max_column,
+            values_only=False,  # Need cell objects for cleaning
         )
+    )
+    if not rows:
+        return
+    header = [cell.value for cell in rows[0]]
+    col_idx = {str(h).strip().upper(): i for i, h in enumerate(header)}
 
-        if not rows:
+    # Create all collections (workbooks and sheets)
+    def new_ws(name):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = name
+        ws.append(header)
+        return wb, ws
+    # Main collections
+    ZeroCollection_wb, ZeroCollection = new_ws("ZeroCollection")
+    CorpCollection_wb, CorpCollection = new_ws("CorpCollection")
+    NonCorpCollection_wb, NonCorpCollection = new_ws("NonCorpCollection")
+    AMERCollection_wb, AMERCollection = new_ws("AMERCollection")
+    MexicoCollection_wb, MexicoCollection = new_ws("MexicoCollection")
+    APACCollection_wb, APACCollection = new_ws("APACCollection")
+    EMEAACollection_wb, EMEAACollection = new_ws("EMEAACollection")
+    GCCollection_wb, GCCollection = new_ws("GCCollection")
+    # Crop/NonCrop by region
+    AMER_CROP_wb, AMER_CROP = new_ws("AMER_CROP")
+    AMER_NONCROP_wb, AMER_NONCROP = new_ws("AMER_NONCROP")
+    MEXICO_CROP_wb, MEXICO_CROP = new_ws("MEXICO_CROP")
+    MEXICO_NONCROP_wb, MEXICO_NONCROP = new_ws("MEXICO_NONCROP")
+    APAC_CROP_wb, APAC_CROP = new_ws("APAC_CROP")
+    APAC_NONCROP_wb, APAC_NONCROP = new_ws("APAC_NONCROP")
+    EMEAA_CROP_wb, EMEAA_CROP = new_ws("EMEAA_CROP")
+    EMEAA_NONCROP_wb, EMEAA_NONCROP = new_ws("EMEAA_NONCROP")
+    GC_CROP_wb, GC_CROP = new_ws("GC_CROP")
+    GC_NONCROP_wb, GC_NONCROP = new_ws("GC_NONCROP")
+    # Combined
+    APAC_AMEA_COMBINED_wb, APAC_AMEA_COMBINED = new_ws("APAC_AMEA_COMBINED")
+    APAC_AMEA_CROP_wb, APAC_AMEA_CROP = new_ws("APAC_AMEA_CROP")
+    APAC_AMEA_NONCROP_wb, APAC_AMEA_NONCROP = new_ws("APAC_AMEA_NONCROP")
+    APAC_AMEA_GC_COMBINED_wb, APAC_AMEA_GC_COMBINED = new_ws("APAC_AMEA_GC_COMBINED")
+    APAC_AMEA_GC_CROP_wb, APAC_AMEA_GC_CROP = new_ws("APAC_AMEA_GC_CROP")
+    APAC_AMEA_GC_NONCROP_wb, APAC_AMEA_GC_NONCROP = new_ws("APAC_AMEA_GC_NONCROP")
+
+    # Helper to get value by column name
+    def get(row, name):
+        idx = col_idx.get(name)
+        if idx is not None and idx < len(row):
+            return row[idx].value if hasattr(row[idx], "value") else row[idx]
+        return ""
+
+    # Main row processing
+    for row in rows[1:]:
+        row_values = [cell.value for cell in row]
+        # --- SAFE AMOUNT ---
+        amount = 0
+        amount_val = get(row, "AMOUNT")
+        try:
+            if amount_val is not None and str(amount_val).strip() != "":
+                amount = float(amount_val)
+        except Exception:
+            amount = 0
+        if amount == 0:
+            ZeroCollection.append(row_values)
             continue
-
-        header = list(rows[0])
-        corp_sheet.append(header)
-        non_corp_sheet.append(header)
-
-        user_type_index = _find_column(header, "USER_TYPE")
-
-        for row in rows[1:]:
-            row_values = list(row)
-            user_type = ""
-            if user_type_index is not None and user_type_index < len(row_values):
-                user_type = str(row_values[user_type_index]).strip().upper()
-
-            if user_type == "C":
-                corp_sheet.append(row_values)
+        # --- USER TYPE ---
+        user_type = str(get(row, "USER_TYPE")).strip().upper()
+        if user_type == "C":
+            CorpCollection.append(row_values)
+        elif user_type in ("F", "H"):
+            NonCorpCollection.append(row_values)
+        # --- REGION LOGIC ---
+        region = str(get(row, "REGION")).strip().upper()
+        country = str(get(row, "COUNTRY")).strip().upper()
+        # AMER / GLOBAL
+        if "GLOBAL" in region or region == "AMER":
+            if country in ("UNITED STATES", "CANADA"):
+                AMERCollection.append(row_values)
+                if user_type == "C":
+                    AMER_CROP.append(row_values)
+                else:
+                    AMER_NONCROP.append(row_values)
             else:
-                non_corp_sheet.append(row_values)
+                MexicoCollection.append(row_values)
+                if user_type == "C":
+                    MEXICO_CROP.append(row_values)
+                else:
+                    MEXICO_NONCROP.append(row_values)
+        # APAC (AMEA + APAC)
+        elif region in ("AMEA", "APAC"):
+            APACCollection.append(row_values)
+            APAC_AMEA_COMBINED.append(row_values)
+            if user_type == "C":
+                APAC_CROP.append(row_values)
+                APAC_AMEA_CROP.append(row_values)
+            else:
+                APAC_NONCROP.append(row_values)
+                APAC_AMEA_NONCROP.append(row_values)
+        # EMEAA
+        elif region == "EMEAA":
+            EMEAACollection.append(row_values)
+            if user_type == "C":
+                EMEAA_CROP.append(row_values)
+            else:
+                EMEAA_NONCROP.append(row_values)
+        # GC
+        elif region == "GC":
+            GCCollection.append(row_values)
+            if user_type == "C":
+                GC_CROP.append(row_values)
+            else:
+                GC_NONCROP.append(row_values)
+        # --- HOLIDEX FIX ---
+        holidexC = str(get(row, "HOLIDEX")).strip()
+        holidexY = str(get(row, "PERSON_HOLIDEX")).strip()
+        if len(holidexC) != 5 and len(holidexY) == 5:
+            idx = col_idx.get("HOLIDEX")
+            if idx is not None and idx < len(row):
+                row[idx].value = holidexY
+        # --- CLEAN COURSE NAME ---
+        course_name = str(get(row, "COURSE_NAME"))
+        course_name_clean = re.sub(r"[^a-zA-Z0-9\-\&\(\) ]", "", course_name)
+        idx = col_idx.get("COURSE_NAME")
+        if idx is not None and idx < len(row):
+            row[idx].value = course_name_clean
 
-    corp_path = _next_available_path(output_dir / f"CorpCollection_{source_stem}.xlsx")
-    non_corp_path = _next_available_path(output_dir / f"NonCorpCollection_{source_stem}.xlsx")
-    corp_workbook.save(corp_path)
-    non_corp_workbook.save(non_corp_path)
+    # =============================
+    # FINAL COMBINE (APAC_AMEA + GC)
+    # =============================
+    # Combine APAC_AMEA
+    for row in APAC_AMEA_COMBINED.iter_rows(min_row=2, max_row=APAC_AMEA_COMBINED.max_row, values_only=True):
+        APAC_AMEA_GC_COMBINED.append(row)
+        user_type = str(row[col_idx.get("USER_TYPE", -1)]).strip().upper() if col_idx.get("USER_TYPE") is not None else ""
+        if user_type == "C":
+            APAC_AMEA_GC_CROP.append(row)
+        else:
+            APAC_AMEA_GC_NONCROP.append(row)
+    # Combine GC
+    for row in GCCollection.iter_rows(min_row=2, max_row=GCCollection.max_row, values_only=True):
+        APAC_AMEA_GC_COMBINED.append(row)
+        user_type = str(row[col_idx.get("USER_TYPE", -1)]).strip().upper() if col_idx.get("USER_TYPE") is not None else ""
+        if user_type == "C":
+            APAC_AMEA_GC_CROP.append(row)
+        else:
+            APAC_AMEA_GC_NONCROP.append(row)
 
-    logger.info("Created CorpCollection file: %s", corp_path)
-    logger.info("Created NonCorpCollection file: %s", non_corp_path)
+    # Save all collections to files
+    def save_wb(wb, name):
+        path = _next_available_path(output_dir / f"{name}_{source_stem}.xlsx")
+        wb.save(path)
+        logger.info("Created %s file: %s", name, path)
+    save_wb(ZeroCollection_wb, "ZeroCollection")
+    save_wb(CorpCollection_wb, "CorpCollection")
+    save_wb(NonCorpCollection_wb, "NonCorpCollection")
+    save_wb(AMERCollection_wb, "AMERCollection")
+    save_wb(MexicoCollection_wb, "MexicoCollection")
+    save_wb(APACCollection_wb, "APACCollection")
+    save_wb(EMEAACollection_wb, "EMEAACollection")
+    save_wb(GCCollection_wb, "GCCollection")
+    save_wb(AMER_CROP_wb, "AMER_CROP")
+    save_wb(AMER_NONCROP_wb, "AMER_NONCROP")
+    save_wb(MEXICO_CROP_wb, "MEXICO_CROP")
+    save_wb(MEXICO_NONCROP_wb, "MEXICO_NONCROP")
+    save_wb(APAC_CROP_wb, "APAC_CROP")
+    save_wb(APAC_NONCROP_wb, "APAC_NONCROP")
+    save_wb(EMEAA_CROP_wb, "EMEAA_CROP")
+    save_wb(EMEAA_NONCROP_wb, "EMEAA_NONCROP")
+    save_wb(GC_CROP_wb, "GC_CROP")
+    save_wb(GC_NONCROP_wb, "GC_NONCROP")
+    save_wb(APAC_AMEA_COMBINED_wb, "APAC_AMEA_COMBINED")
+    save_wb(APAC_AMEA_CROP_wb, "APAC_AMEA_CROP")
+    save_wb(APAC_AMEA_NONCROP_wb, "APAC_AMEA_NONCROP")
+    save_wb(APAC_AMEA_GC_COMBINED_wb, "APAC_AMEA_GC_COMBINED")
+    save_wb(APAC_AMEA_GC_CROP_wb, "APAC_AMEA_GC_CROP")
+    save_wb(APAC_AMEA_GC_NONCROP_wb, "APAC_AMEA_GC_NONCROP")
 
 
 def _split_region_collections(cleaned_workbook: Workbook, source_stem: str) -> dict[str, str]:
     output_dir = Path(settings.output_dir) / "Region_Wise_Split"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    region_workbooks = {
-        "AMER": Workbook(),
-        "APAC": Workbook(),
-        "GC": Workbook(),
-        "APAC_GC": Workbook(),
-        "EMEAA": Workbook(),
-    }
-
-    for workbook in region_workbooks.values():
-        workbook.remove(workbook.active)
-
-    for cleaned_sheet in cleaned_workbook.worksheets:
-        region_sheets = {
-            name: workbook.create_sheet(title=cleaned_sheet.title)
-            for name, workbook in region_workbooks.items()
-        }
-
-        rows = list(
-            cleaned_sheet.iter_rows(
-                min_row=1,
-                max_row=cleaned_sheet.max_row,
-                max_col=cleaned_sheet.max_column,
-                values_only=True,
-            )
+    # Only process the first sheet for simplicity (can be extended for multi-sheet)
+    cleaned_sheet = cleaned_workbook.worksheets[0]
+    rows = list(
+        cleaned_sheet.iter_rows(
+            min_row=1,
+            max_row=cleaned_sheet.max_row,
+            max_col=cleaned_sheet.max_column,
+            values_only=True,
         )
+    )
+    if not rows:
+        return {}
+    header = list(rows[0])
+    col_idx = {str(h).strip().upper(): i for i, h in enumerate(header)}
 
-        if not rows:
-            continue
+    # Create output workbooks and sheets
+    def new_ws(name):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = name
+        ws.append(header)
+        return wb, ws
+    AMER_wb, AMER_ws = new_ws("AMER")
+    APAC_wb, APAC_ws = new_ws("APAC")
+    GC_wb, GC_ws = new_ws("GC")
+    APAC_GC_wb, APAC_GC_ws = new_ws("APAC_GC")
+    EMEAA_wb, EMEAA_ws = new_ws("EMEAA")
 
-        header = list(rows[0])
-        for sheet in region_sheets.values():
-            sheet.append(header)
+    # Loop through rows and distribute as per VBO logic
+    for row in rows[1:]:
+        bu = str(row[col_idx.get("BU", -1)]).strip().upper() if col_idx.get("BU") is not None else ""
+        region = str(row[col_idx.get("REGION", -1)]).strip().upper() if col_idx.get("REGION") is not None else ""
+        if bu.startswith("A"):
+            AMER_ws.append(row)
+        elif bu.startswith("P"):
+            APAC_GC_ws.append(row)
+            if region == "GC":
+                GC_ws.append(row)
+            elif region == "APAC" or region == "AMEA":
+                APAC_ws.append(row)
+            else:
+                APAC_ws.append(row)
+        elif bu.startswith("H"):
+            EMEAA_ws.append(row)
 
-        bu_index = _find_column(header, "BU")
-        region_index = _find_column(header, "REGION")
-
-        for row in rows[1:]:
-            row_values = list(row)
-            bu = ""
-            region = ""
-
-            if bu_index is not None and bu_index < len(row_values):
-                bu = str(row_values[bu_index]).strip().upper()
-            if region_index is not None and region_index < len(row_values):
-                region = str(row_values[region_index]).strip().upper()
-
-            # AMER: BU starts with A
-            if bu.startswith("A"):
-                region_sheets["AMER"].append(row_values)
-            # APAC_GC (combined) + split to APAC & GC: BU starts with P
-            elif bu.startswith("P"):
-                region_sheets["APAC_GC"].append(row_values)
-                if region == "GC":
-                    region_sheets["GC"].append(row_values)
-                else:
-                    region_sheets["APAC"].append(row_values)
-            # EMEAA: BU starts with H
-            elif bu.startswith("H"):
-                region_sheets["EMEAA"].append(row_values)
-
+    # Save all workbooks
     output_paths: dict[str, str] = {}
-    for region_name, workbook in region_workbooks.items():
-        output_path = _next_available_path(output_dir / f"{region_name}_{source_stem}.xlsx")
-        workbook.save(output_path)
-        output_paths[region_name] = str(output_path)
-        logger.info("Created %s region file: %s", region_name, output_path)
-
+    def save_wb(wb, name):
+        path = _next_available_path(output_dir / f"{name}_{source_stem}.xlsx")
+        wb.save(path)
+        output_paths[name] = str(path)
+        logger.info("Created %s region file: %s", name, path)
+    save_wb(AMER_wb, "AMER")
+    save_wb(APAC_wb, "APAC")
+    save_wb(GC_wb, "GC")
+    save_wb(APAC_GC_wb, "APAC_GC")
+    save_wb(EMEAA_wb, "EMEAA")
     return output_paths
 
 
@@ -289,13 +427,45 @@ def remove_red_rows_from_excel(
             if not any(_is_red_fill(cell) for cell in row):
                 output_sheet.append([cell.value for cell in row])
 
+
     output_path = target_dir / f"cleaned_no_red_{source_path.stem}.xlsx"
     output_path = _next_available_path(output_path)
     output_workbook.save(output_path)
 
-    _split_user_type_collections(cleaned_workbook=output_workbook, source_stem=source_path.stem)
-    region_output_paths = _split_region_collections(cleaned_workbook=output_workbook, source_stem=source_path.stem)
-    _split_intercompany_collections(cleaned_workbook=output_workbook, source_stem=source_path.stem)
+    # === NEW: Copy data from Manual_entry file(s) if any exist ===
+    manual_entry_dir = Path(settings.upload_dir) / "Manual_entry" if hasattr(settings, "upload_dir") else Path("data/Manual_entry")
+    manual_files = list(manual_entry_dir.glob("*.xlsx"))
+    if manual_files:
+        from openpyxl import load_workbook as _load_wb
+        # Use the first file found (can be extended to merge all if needed)
+        manual_file = manual_files[0]
+        manual_wb = _load_wb(manual_file)
+        manual_ws = manual_wb.active
+        # Open the cleaned file again for appending
+        cleaned_wb = load_workbook(output_path)
+        cleaned_ws = cleaned_wb.active
+        # Find the header row in manual_ws (assume first row)
+        manual_header = [cell.value for cell in next(manual_ws.iter_rows(min_row=1, max_row=1))]
+        cleaned_header = [cell.value for cell in next(cleaned_ws.iter_rows(min_row=1, max_row=1))]
+        # Map columns by header name
+        manual_col_map = {str(h).strip().upper(): i for i, h in enumerate(manual_header)}
+        cleaned_col_map = {str(h).strip().upper(): i for i, h in enumerate(cleaned_header)}
+        # For each data row in manual_ws, append to cleaned_ws in correct order
+        for row in manual_ws.iter_rows(min_row=2, max_row=manual_ws.max_row, values_only=True):
+            # Build row for cleaned_ws
+            new_row = [None] * len(cleaned_header)
+            for h, idx in cleaned_col_map.items():
+                if h in manual_col_map:
+                    val = row[manual_col_map[h]]
+                    new_row[idx] = val
+            cleaned_ws.append(new_row)
+        cleaned_wb.save(output_path)
+        logger.info(f"Appended data from Manual_entry file {manual_file} to cleaned file {output_path}")
+
+    # Continue with further processing
+    corp_noncorp_split = _split_user_type_collections(cleaned_workbook=load_workbook(output_path), source_stem=source_path.stem)
+    region_output_paths = _split_region_collections(cleaned_workbook=load_workbook(output_path), source_stem=source_path.stem)
+    _split_intercompany_collections(cleaned_workbook=load_workbook(output_path), source_stem=source_path.stem)
 
     try:
         generate_amer_peoplesoft_output(input_file_path=str(output_path))
@@ -317,16 +487,17 @@ def remove_red_rows_from_excel(
     except Exception as exc:
         logger.warning("Failed APAC processing generation for cleaned file %s: %s", output_path, exc)
 
+    input_apac_gc_intewrcompany_result: dict[str, str | int] | None = None 
     try:
-        apac_gc_noncorp_file = (
-            str(apac_processing_result["apac_gc_noncrop_path"])
-            if apac_processing_result and apac_processing_result.get("apac_gc_noncrop_path")
-            else None
-        )
-        if apac_gc_noncorp_file:
-            generate_apac_gc_intewrcompany_output(input_file_path=apac_gc_noncorp_file)
+        input_apac_gc_intewrcompany_result = generate_input_apac_gc_intewrcompany(input_file_path=str(output_path))
+    except Exception as exc:
+        logger.warning("Failed APAC processing generation for cleaned file %s: %s", output_path, exc)    
+
+    try:
+        if input_apac_gc_intewrcompany_result:
+            generate_apac_gc_intewrcompany_output(input_file_path=input_apac_gc_intewrcompany_result)
         else:
-            logger.warning("APAC GC NONCROP collection not found in APAC processing output")
+            logger.warning("APAC GC INTERCOMPANY input not found from input service")
     except Exception as exc:
         logger.warning("Failed APAC GC Intercompany generation for cleaned file %s: %s", output_path, exc)
 
@@ -368,29 +539,26 @@ def remove_red_rows_from_excel(
     except Exception as exc:
         logger.warning("Failed EMEAA processing generation for cleaned file %s: %s", output_path, exc)
 
+    input_emeaa_intercompany_result: dict[str, str | int] | None = None
     try:
-        emeaa_v2_file = (
-            str(emeaa_processing_result["emeaa_v2_path"])
-            if emeaa_processing_result and emeaa_processing_result.get("emeaa_v2_path")
-            else None
-        )
-        if emeaa_v2_file:
-            generate_emeaa_intercompany_output(input_file_path=emeaa_v2_file)
+        input_emeaa_intercompany_result = generate_input_emeaa_intercompany_result(input_file_path=output_path)
+    except Exception as exc:
+        logger.warning("Failed EMEAA processing generation for cleaned file %s: %s", output_path, exc)
+
+    try:
+        if input_emeaa_intercompany_result:
+            generate_emeaa_intercompany_output(input_file_path=input_emeaa_intercompany_result)
         else:
-            logger.warning("EMEAA_V2 collection not found in EMEAA processing output")
+            logger.warning("EMEAA_INTERCOMPANY collection not found in EMEAA processing output")
     except Exception as exc:
         logger.warning("Failed EMEAA Intercompany generation for cleaned file %s: %s", output_path, exc)
 
 
     # Only generate JRF output if there is at least one data row (excluding header)
     try:
-        rir_gc_crop_file = (
-            str(apac_processing_result["rir_gc_crop_path"])
-            if apac_processing_result and apac_processing_result.get("rir_gc_crop_path")
-            else None
-        )
-        if rir_gc_crop_file:
-            generate_jrf_output(input_file_path=rir_gc_crop_file)
+        gc_corp_billing = corp_noncorp_split.get("GC_CROP")
+        if gc_corp_billing:
+            generate_jrf_output(input_file_path=gc_corp_billing)
         else:
             logger.warning("RIR GC CROP collection not found in APAC processing output")
     except Exception as exc:

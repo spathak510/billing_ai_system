@@ -52,7 +52,7 @@ def download_file_from_sharepoint(remote_path: str, local_dir: str) -> str:
 
 
 
-def sharepoint_download():
+def sharepoint_download(place=None) -> str:
     """Download all files from the configured SharePoint folder to local data storage.
 
     No request body is required. Files are downloaded from the configured
@@ -63,50 +63,65 @@ def sharepoint_download():
     status = ""
     errors = []
     download_count = 0
-    # We attempt to download the monthly report files first since they are the most critical for the billing process. The history folders are expected to have more files and be more likely to encounter issues, so we attempt them after the monthly report to ensure we get the critical billing files downloaded even if there are issues with the history folders.
-    try:
-        remote_path = settings.sharepoint_download_root_path.rstrip("/")+"/Monthly Billing"
-        local_dir = settings.upload_dir+"/Monthly_data"
-        downloaded_monthly_report_files = download_file_from_sharepoint(remote_path, local_dir)
-        status = status + "Monthly report files downloaded. "
-        download_count += 1
-    except Exception as exc:
-        logger.error("sharepoint_download_api failed: %s", exc)
-        errors.append(f"Monthly: {exc}")
-    
-    # The HISTORY_CORP folder is expected to have the main historical billing files, so we attempt it first to ensure those critical files are downloaded even if there are issues with the NON-CORP history folder.
-    try:
-        logger.info("History of CROP files download started...........................................")
-        corp = ['AMER CROP', 'EMEAA CROP', 'APAC GC CROP', 'MEXICO CROP']
-        remote_path =''
-        local_dir = settings.upload_dir+"/History_data/Crop"
-        for path in corp:
-            remote_path = settings.sharepoint_download_root_path.rstrip("/")+"/History Data/Crop" + "/" + path
-            downloaded_history_corp_files = download_file_from_sharepoint(remote_path, local_dir)
+    month_folder = datetime.now().strftime("%B_%Y")
+    if place == "Cleaning_Agent":
+        # We attempt to download the monthly report files first since they are the most critical for the billing process. The history folders are expected to have more files and be more likely to encounter issues, so we attempt them after the monthly report to ensure we get the critical billing files downloaded even if there are issues with the history folders.
+        try:
+            remote_path = settings.sharepoint_download_root_path.rstrip("/")+"/Monthly Billing"
+            local_dir = settings.upload_dir+"/Monthly_data"
+            downloaded_monthly_report_files = download_file_from_sharepoint(remote_path, local_dir)
+            status = status + "Monthly report files downloaded. "
             download_count += 1
-        status = status + "History CROP files downloaded. " 
-        logger.info("History of CROP files download completed...........................................:%s",str(download_count))
-    except Exception as exc:
-        logger.error("sharepoint_download_api failed: %s", exc)
-        errors.append(f"History CROP: {exc}")
-    
-    # The NON-CORP folder is expected to have fewer files, so we attempt it last to ensure the main monthly report files are downloaded even if there are issues with the history folders.
-    try:
-        logger.info("History of NONCROP files download started...........................................")
-        non_crop = ['AMER NON CROP', 'EMEAA NON CROP', 'APAC GC NON CROP', 'MEXICO NON CROP']
-        remote_path =''
-        local_dir = settings.upload_dir+"/History_data/NonCrop"
-        for path in non_crop:
-            remote_path = settings.sharepoint_download_root_path.rstrip("/")+"/History Data/Non Crop" + "/" + path
-            downloaded_history_NonCrop_files = download_file_from_sharepoint(remote_path, local_dir)
-            download_count += 1
-        status = status + "History NON-CROP files downloaded. "
-        logger.info("History of NONCROP files download completed...........................................:%s",str(download_count))
-    except Exception as exc:
-        logger.error("sharepoint_download_api failed: %s", exc)
-        errors.append(f"History NON-CROP: {exc}")
+        except Exception as exc:
+            logger.error("sharepoint_download_api failed: %s", exc)
+            errors.append(f"Monthly: {exc}")
         
-    return {"status": status, "download_count": download_count, "errors": errors}
+        # The HISTORY_CORP folder is expected to have the main historical billing files, so we attempt it first to ensure those critical files are downloaded even if there are issues with the NON-CORP history folder.
+        try:
+            logger.info("History of CROP files download started...........................................")
+            corp = ['AMER CROP', 'EMEAA CROP', 'APAC GC CROP', 'MEXICO CROP']
+            remote_path =''
+            local_dir = settings.upload_dir+"/History_data/Crop"
+            for path in corp:
+                remote_path = settings.sharepoint_download_root_path.rstrip("/")+"/History Data/Crop" + "/" + path
+                downloaded_history_corp_files = download_file_from_sharepoint(remote_path, local_dir)
+                download_count += 1
+            status = status + "History CROP files downloaded. " 
+            logger.info("History of CROP files download completed...........................................:%s",str(download_count))
+        except Exception as exc:
+            logger.error("sharepoint_download_api failed: %s", exc)
+            errors.append(f"History CROP: {exc}")
+        
+        # The NON-CORP folder is expected to have fewer files, so we attempt it last to ensure the main monthly report files are downloaded even if there are issues with the history folders.
+        try:
+            logger.info("History of NONCROP files download started...........................................")
+            non_crop = ['AMER NON CROP', 'EMEAA NON CROP', 'APAC GC NON CROP', 'MEXICO NON CROP']
+            remote_path =''
+            local_dir = settings.upload_dir+"/History_data/NonCrop"
+            for path in non_crop:
+                remote_path = settings.sharepoint_download_root_path.rstrip("/")+"/History Data/Non Crop" + "/" + path
+                downloaded_history_NonCrop_files = download_file_from_sharepoint(remote_path, local_dir)
+                download_count += 1
+            status = status + "History NON-CROP files downloaded. "
+            logger.info("History of NONCROP files download completed...........................................:%s",str(download_count))
+        except Exception as exc:
+            logger.error("sharepoint_download_api failed: %s", exc)
+            errors.append(f"History NON-CROP: {exc}")
+            
+        return {"status": status, "download_count": download_count, "errors": errors}
+    
+    elif place == "Post_validation_Agent":
+        month_folder = datetime.now().strftime("%B %Y") 
+        try:
+            remote_path = settings.sharepoint_download_root_path.rstrip("/")+"/Manual Entry/{month_folder}".format(month_folder=month_folder)
+            local_dir = settings.upload_dir+"/Manual_entry"
+            download_file_from_sharepoint(remote_path, local_dir)
+            status = status + "Manual entry report files downloaded. "
+            download_count += 1
+        except Exception as exc:
+            logger.error("sharepoint_download_api failed: %s", exc)
+            errors.append(f"Monthly: {exc}")
+
         
 
 
