@@ -263,11 +263,14 @@ def generate_rir_apac_output(
         row_index += 1
         line_no += 1
 
-    # Set totals in upload sheet (I5)
-    _set_cell_value_safe(upload_sheet, "I5", float(total))
+
+    # Set row count in upload sheet (I5) instead of total amount
+    _set_cell_value_safe(upload_sheet, "I5", record_count)
 
     # Set totals in recharge form (I33)
     _set_cell_value_safe(recharge_sheet, "I33", float(total))
+
+    # ...removed setting TOTAL BILLING MISC COUNT as requested...
 
     # Save with fixed output name (overwrite existing file), matching VBO behavior.
     base_name = output_file_name.strip() or "RIR_GC_APAC_NON-CORP"
@@ -286,7 +289,7 @@ def generate_rir_apac_output(
     return {
         "rir_apac_output_path": str(output_path),
         "rir_apac_records": record_count,
-        "rir_apac_total": float(total),
+        "rir_apac_total": record_count,  # Changed from total amount to total row count
         "template_file": str(resolved_template_path),
         "source_file": str(source_path),
     }

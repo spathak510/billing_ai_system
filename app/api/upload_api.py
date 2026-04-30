@@ -23,7 +23,6 @@ from app.services.sharepoint_upload_service import SharePointUploadClient
 from app.api.sharepoint_processor import sharepoint_upload_post_validation_records
 from app.api.mail_processor import post_validation_send_email
 from app.agents.SmartFeedbackAgent import SmartFeedbackAgent
-from app.agents.comparison_agent import run_monthly_comparison
 
 
 logger = logging.getLogger(__name__)
@@ -583,7 +582,7 @@ def register_api_routes(app: Flask) -> None:
         No request body is required. Files are downloaded from the configured
         SharePoint folder into the local data directory.
         """
-        tasks.run_clean_data_flow_task()
+        tasks.run_clean_data_flow_task.delay()
 
         return (
             jsonify(
@@ -776,37 +775,9 @@ def register_api_routes(app: Flask) -> None:
     @app.post("/api/v1/cleanup/all")
     def cleanup_all_api():
         """Remove all flow output files and cleanup generated files from data folder.
-
-        This endpoint recursively deletes:
-        - ALL files in output/ folder (preserves folder structure & templates)
-        - cleaned_no_red_*.xlsx files from data/ folder (preserves original inputs)
-
-        Preserves:
-        - Folder structure (directories are not deleted, only contents)
-        - Template files (files/folders containing 'template' in the name)
-        - Original input files in data/ folder (only removes generated cleanup files)
-
         Request JSON body (optional)::
-
             {
                 "confirm": true  # Safe to omit - just call the endpoint
-            }
-
-        Response::
-
-            {
-                "status": "success",
-                "message": "Cleanup completed successfully (output/ and data/cleaned files removed)",
-                "files_deleted": 125,
-                "folders_scanned": 45,
-                "size_freed_mb": 156.34,
-                "locations_cleaned": ["output", "data"],
-                "removed_paths": [
-                    "output/AMER_Intercompny/Output/AMER_Intercompany billing lines_April 2026.xlsx",
-                    "output/APAC/APAC_Output/APAC Processing_APAC_GC_CROP.xlsx",
-                    "data/cleaned_no_red_2026.02 Global Corp & Non-Corp February 2026 - Learning Updated 2026.02.18.xlsx",
-                    ...
-                ]
             }
         """
         try:
@@ -892,37 +863,3 @@ def register_api_routes(app: Flask) -> None:
             ),
             200,
         )
-
-    @app.post("/api/v1/comparison/run")
-    def run_comparison_agent_api():
-        """Run the monthly comparison agent independently for validation/testing."""
-        data = request.get_json(force=True, silent=True) or {}
-        source_file_path = data.get("source_file_path")
-        output_file_path = data.get("output_file_path")
-        reference_file_path = data.get("reference_file_path")
-
-        if source_file_path is not None and not isinstance(source_file_path, str):
-            return (
-                jsonify(
-                    {"error": "'source_file_path' must be a string when provided."}
-                ),
-                400,
-            )
-        if output_file_path is not None and not isinstance(output_file_path, str):
-            return (
-                jsonify(
-                    {"error": "'output_file_path' must be a string when provided."}
-                ),
-                400,
-            )
-
-        try:
-            result = run_monthly_comparison(
-                source_file_path=source_file_path,
-                output_file_path=output_file_path,
-            )
-        except Exception as exc:
-            logger.error("run_comparison_agent_api failed: %s", exc)
-            return jsonify({"error": str(exc), "status": "error"}), 500
-
-        return jsonify(result), 200
