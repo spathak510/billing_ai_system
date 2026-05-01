@@ -10,7 +10,7 @@ from flask import request
 from app.config.settings import settings
 from app.services.ihg_servicenow_ticket_service import create_ticket_service_now
 from app.services.cleanup_service import cleanup_all_outputs
-from app.api.sharepoint_processor import sharepoint_download, sharepoint_upload
+from app.api.sharepoint_processor import sharepoint_download, sharepoint_upload, sharepoint_upload_processed_data
 from app.agents.cleaning_agent import cleaning_data_prosessing
 from app.services.excel_filter_service import remove_red_rows_from_excel
 from app.api.sharepoint_processor import sharepoint_upload_post_validation_records, sharepoint_download_history_data
@@ -213,13 +213,13 @@ Note: Please do not make any changes to this ticket, as it will be automatically
         logger.error("Step 7: SendMail Agent failed for Post validation: %s", exc)
         return {"error": f"post_validation_send_email failed: {exc}"}
 
-    # Schedule cleanup task to run after 6 hours (21600 seconds)
+    # Schedule SharePoint upload and cleanup task to run after 1 hour (3600 seconds)
     try:
-        logger.info("Step 8: Cleanup Agent will started in 6 minutes...................................")
-        run_cleanup_task.apply_async(countdown=3600)
-        logger.info("Step 8: Cleanup Agent completed local files cleanup.............................")
+        logger.info("Step 8: SharePoint upload of processed data agent will start in 1 hour (scheduled with Celery)...")
+        processed_data_response = run_sharepoint_upload_processed_data.apply_async(countdown=3600)
+        logger.info("Step 8: SharePoint upload of processed data agent has been scheduled. Cleanup Agent will run after upload.")
     except Exception as exc:
-        logger.error(" Step 8: Cleanup Agent Failed to cleanup local files : %s", exc)
+        logger.error("Step 8: Failed to schedule SharePoint upload processed data agent: %s", exc)
 
     return {
         "status": "ok",
@@ -281,6 +281,18 @@ def feedback_process_task():
                     "message": f"An error occurred: {str(exc)}",
                 }   
 
+
+
+def run_sharepoint_upload_processed_data():
+    """Run the SharePoint upload for processed data asynchronously."""
+    try:
+        logger.info("Starting SharePoint upload for processed data agent ...................................")
+        sharepoint_upload_processed_data()
+        logger.info("SharePoint upload for processed data agent completed successfully .............................")
+        return {"status": "SharePoint upload completed"}
+    except Exception as exc:
+        logger.error("SharePoint upload for processed data agent failed: %s", exc)
+        return {"error": str(exc)}
 
 @celery_app.task(name="app.tasks.run_cleanup_task")
 def run_cleanup_task():

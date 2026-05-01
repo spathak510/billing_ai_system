@@ -851,10 +851,13 @@ def register_api_routes(app: Flask) -> None:
     @app.post("/api/v1/test_api")
     def vm_test_api():
         """Only for test use"""
-        print(
-            "============================ API is Woking fine on the VM ============================="
-        )
-        tasks.feedback_process_task()
+        logger.info("============================ API is Working fine on the VM =============================")
+        # tasks.feedback_process_task()
+        # from app.services.excel_append_service import ExcelAppendService
+        # obj = ExcelAppendService()
+        # obj.new_history_data_preparation()
+        from app.api.sharepoint_processor import sharepoint_upload_processed_data
+        sharepoint_upload_processed_data()
         return (
             jsonify(
                 {
