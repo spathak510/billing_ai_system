@@ -41,18 +41,23 @@ def cleanup_all_outputs() -> dict[str, object]:
         data_base / "History_data" / "Crop",
         data_base / "History_data" / "NonCrop",
         data_base / "Monthly_data",
+        data_base / "Manual_entry",
         data_base / "Post_validation_data",
         output_base,
         output_base / "AMER" / "AMER_Output",
         output_base / "AMER_Intercompny" / "Output",
+        output_base / "AMER_Intercompny" / "Input",
         output_base / "APAC" / "APAC_GC_RIR" / "Output",
         output_base / "APAC" / "APAC_Intercompny" / "Output",
+        output_base / "APAC" / "APAC_Intercompny" / "Input",
         output_base / "APAC" / "APAC_Output",
         output_base / "APAC" / "GAF_APAC_Processor" / "Output",
         output_base / "EMEAA" / "EMEAA_Intercompany" / "Output",
+        output_base / "EMEAA" / "EMEAA_Intercompany" / "Input",
         output_base / "EMEAA" / "Output",
         output_base / "JRF" / "Output",
         output_base / "Monthly_cleaned_report",
+        output_base / "Corp_NonCorp_Split",
         output_base / "Region_Wise_Split",
     ]
 
@@ -71,32 +76,27 @@ def cleanup_all_outputs() -> dict[str, object]:
                 for file in folder_path.iterdir():
                     if file.is_file():
                         try:
-                            file_size = file.stat().st_size
-                            total_size_bytes += file_size
                             file.unlink()
                             files_deleted += 1
                             if len(removed_paths) < 50:
                                 removed_paths.append(str(file))
-                            logger.debug("Deleted file: %s (%.2f KB)", file, file_size / 1024)
+                            logger.debug("Deleted file: %s", file)
                         except OSError as e:
                             logger.warning("Failed to delete file %s: %s", file, e)
                             continue
             else:
                 logger.warning("Folder does not exist: %s", folder_path)
 
-        size_freed_mb = total_size_bytes / (1024 * 1024)
         logger.info(
-            "Cleanup completed: deleted %d files, scanned %d folders, freed %.2f MB",
+            "Cleanup completed: deleted %d files, scanned %d folders",
             files_deleted,
             folders_scanned,
-            size_freed_mb,
         )
         return {
             "status": "success",
             "message": "Cleanup completed successfully (only specified folders cleaned)",
             "files_deleted": files_deleted,
             "folders_scanned": folders_scanned,
-            "size_freed_mb": round(size_freed_mb, 2),
             "removed_paths": removed_paths,
             "locations_cleaned": locations_cleaned,
         }
@@ -108,7 +108,6 @@ def cleanup_all_outputs() -> dict[str, object]:
             "message": error_msg,
             "files_deleted": files_deleted,
             "folders_scanned": folders_scanned,
-            "size_freed_mb": round(total_size_bytes / (1024 * 1024), 2),
             "removed_paths": removed_paths,
             "locations_cleaned": locations_cleaned,
         }
