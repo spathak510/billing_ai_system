@@ -42,6 +42,10 @@ class Settings(BaseSettings):
         "EMEAA/EMEAA_Intercompany/Output",
         "APAC/APAC_Intercompny/Output",
     ]
+    
+    # Error notification configuration
+    error_notifications_mail: list[str] = ["sono.pathak2@ihg.com"]
+    error_notifications_cc: list[str] = ["Shaik.Mohiddin@ihg.com"]  # Optional CC list for error notifications
 
     # SharePoint configuration
     sharepoint_tenant_id: str = ""

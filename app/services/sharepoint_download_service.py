@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import logging
-import os
+import os, time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.error import HTTPError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
+from urllib.error import URLError
 
 from app.config.settings import settings
 
@@ -276,10 +277,11 @@ class SharePointDownloadClient:
             raise
 
     def _execute_graph_request(self, request_factory, operation: str) -> bytes:
-        """Execute a Graph request and retry with delegated auth on auth failures when available."""
+        """Execute a Graph request and retry with delegated auth on auth failures and network errors."""
         attempts = [False]
         if self._has_password_auth:
             attempts.append(True)
+        max_retries = 3
 
         for prefer_password in attempts:
             token = self._get_access_token_for_mode(
@@ -287,32 +289,43 @@ class SharePointDownloadClient:
                 force_refresh=prefer_password,
             )
             req = request_factory(token)
-            try:
-                with urlopen(req, timeout=self._timeout_seconds) as response:
-                    return response.read()
-            except HTTPError as e:
-                error_body = e.read().decode('utf-8', errors='replace') if hasattr(e, 'read') else str(e)
-                should_retry = (
-                    e.code in {401, 403}
-                    and not prefer_password
-                    and self._has_password_auth
-                    and self._auth_mode != "password"
-                )
-                if should_retry:
-                    logger.warning(
-                        "%s failed with status %s using %s auth; retrying with username/password flow. Response: %s",
-                        operation,
-                        e.code,
-                        self._auth_mode or "unknown",
-                        error_body,
+            for attempt in range(max_retries):
+                try:
+                    with urlopen(req, timeout=self._timeout_seconds) as response:
+                        return response.read()
+                except HTTPError as e:
+                    error_body = e.read().decode('utf-8', errors='replace') if hasattr(e, 'read') else str(e)
+                    should_retry = (
+                        e.code in {401, 403}
+                        and not prefer_password
+                        and self._has_password_auth
+                        and self._auth_mode != "password"
                     )
-                    self._token = None
-                    self._token_expires_at = None
-                    self._auth_mode = None
-                    continue
-                logger.error("%s failed: Status %s. Response: %s", operation, e.code, error_body)
-                raise
-
+                    if should_retry:
+                        logger.warning(
+                            "%s failed with status %s using %s auth; retrying with username/password flow. Response: %s",
+                            operation,
+                            e.code,
+                            self._auth_mode or "unknown",
+                            error_body,
+                        )
+                        self._token = None
+                        self._token_expires_at = None
+                        self._auth_mode = None
+                        break  # Break out of retry loop to try next auth mode
+                    logger.error("%s failed: Status %s. Response: %s", operation, e.code, error_body)
+                    raise
+                except URLError as e:
+                    logger.warning(
+                        "%s network error: %s. Attempt %d/%d",
+                        operation, e, attempt + 1, max_retries
+                    )
+                    if attempt < max_retries - 1:
+                        time.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
+                        continue
+                    else:
+                        logger.error("%s failed after %d attempts due to network error: %s", operation, max_retries, e)
+                        raise
         raise RuntimeError(f"{operation} failed unexpectedly without returning a response.")
 
     def _download_file_from_sharepoint(self, token: str, file_path: str) -> bytes:

@@ -10,12 +10,13 @@ from flask import request
 from app.config.settings import settings
 from app.services.ihg_servicenow_ticket_service import create_ticket_service_now
 from app.services.cleanup_service import cleanup_all_outputs
-from app.api.sharepoint_processor import sharepoint_download, sharepoint_upload
+from app.api.sharepoint_processor import sharepoint_download, sharepoint_upload, sharepoint_upload_processed_data
 from app.agents.cleaning_agent import cleaning_data_prosessing
 from app.services.excel_filter_service import remove_red_rows_from_excel
 from app.api.sharepoint_processor import sharepoint_upload_post_validation_records, sharepoint_download_history_data
 from app.api.mail_processor import post_validation_send_email, send_text_email
 from app.agents.mail_reader_agent import MailReaderAgent
+from app.utils.error_notifier import send_error_notification
 from app.agents.SmartFeedbackAgent import SmartFeedbackAgent
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,11 @@ Note: Please do not make any changes to the ticket, as it will be automatically 
 
     except Exception as exc:
         logger.exception("Background flow failed: %s", exc)
+        send_error_notification(
+            subject="[Billing AI System] Error in run_clean_data_flow_task",
+            error=exc,
+            context="Celery run_clean_data_flow_task"
+        )
              
 
 
@@ -129,6 +135,11 @@ def run_post_validation_flow_task():
                 logger.warning(f"Failed to mark email {getattr(email, 'id', None)} as read: {exc}")
     except Exception as exc:
         logger.warning("Failed mail reader Agent to fetch emails : %s", exc)
+        send_error_notification(
+            subject="[Billing AI System] Error in run_post_validation_flow_task (mail fetch)",
+            error=exc,
+            context="Celery run_post_validation_flow_task - mail fetch"
+        )
         return {"error": str(exc)}
     
     folder_path = "data/Post_Validation_Data"
@@ -154,6 +165,11 @@ def run_post_validation_flow_task():
     except Exception as exc:
         logger.error("Step 3: Files download from SharePoint Agent failed: %s", exc)
         # Do not stop the flow if file not found or error occurs, just log and continue
+        send_error_notification(
+            subject="[Billing AI System] Error in run_post_validation_flow_task (sharepoint download)",
+            error=exc,
+            context="Celery run_post_validation_flow_task - sharepoint download"
+        )
         pass
 
     # Step 4: Remove red-highlighted rows
@@ -169,6 +185,11 @@ def run_post_validation_flow_task():
         logger.info("Step 4: Clasification Agent remove_red_rows_from_excel completed: %s", cleaned_path)
     except Exception as exc:
         logger.error("Step 4 failed: %s", exc)
+        send_error_notification(
+            subject="[Billing AI System] Error in run_post_validation_flow_task (remove_red_rows_from_excel)",
+            error=exc,
+            context="Celery run_post_validation_flow_task - remove_red_rows_from_excel"
+        )
         return {"error": f" Step 4: Clasification Agent failed to remove_red_rows_from_excel: {exc}"}
 
     # Step 5: SharePoint upload
@@ -178,6 +199,11 @@ def run_post_validation_flow_task():
         logger.info("Step 5: File Upload Agent completed: %s", upload_result)
     except Exception as exc:
         logger.error("Step 5 failed: %s", exc)
+        send_error_notification(
+            subject="[Billing AI System] Error in run_post_validation_flow_task (sharepoint_upload_post_validation_records)",
+            error=exc,
+            context="Celery run_post_validation_flow_task - sharepoint_upload_post_validation_records"
+        )
         return {"error": f" Step 5: Upload Agent failed for sharepoint upload post validation records: {exc}"}
 
     # Step 6: ServiceNow ticket
@@ -202,6 +228,11 @@ Note: Please do not make any changes to this ticket, as it will be automatically
         logger.info("Step 6: Ticket initiator Agent completed PS Upload : %s", servicenow_result)
     except Exception as exc:
         logger.error("Step 6: Ticket initiator Agent PS Upload failed: %s", exc)
+        send_error_notification(
+            subject="[Billing AI System] Error in run_post_validation_flow_task (create_ticket_service_now)",
+            error=exc,
+            context="Celery run_post_validation_flow_task - create_ticket_service_now"
+        )
         return {"error": f"create_ticket_service_now failed: {exc}"}
 
     # Step 7: Post-validation send email
@@ -211,15 +242,25 @@ Note: Please do not make any changes to this ticket, as it will be automatically
         logger.info("Step 7: SendMail Agent completed for Post validation ............................")
     except Exception as exc:
         logger.error("Step 7: SendMail Agent failed for Post validation: %s", exc)
+        send_error_notification(
+            subject="[Billing AI System] Error in run_post_validation_flow_task (post_validation_send_email)",
+            error=exc,
+            context="Celery run_post_validation_flow_task - post_validation_send_email"
+        )
         return {"error": f"post_validation_send_email failed: {exc}"}
 
-    # Schedule cleanup task to run after 6 hours (21600 seconds)
+    # Schedule SharePoint upload and cleanup task to run after 1 hour (3600 seconds)
     try:
-        logger.info("Step 8: Cleanup Agent will started in 6 minutes...................................")
-        run_cleanup_task.apply_async(countdown=3600)
-        logger.info("Step 8: Cleanup Agent completed local files cleanup.............................")
+        logger.info("Step 8: SharePoint upload of processed data agent will start in 1 hour (scheduled with Celery)...")
+        processed_data_response = run_sharepoint_upload_processed_data.apply_async(countdown=3600)
+        logger.info("Step 8: SharePoint upload of processed data agent has been scheduled. Cleanup Agent will run after upload.")
     except Exception as exc:
-        logger.error(" Step 8: Cleanup Agent Failed to cleanup local files : %s", exc)
+        logger.error("Step 8: Failed to schedule SharePoint upload processed data agent: %s", exc)
+        send_error_notification(
+            subject="[Billing AI System] Error in run_post_validation_flow_task (sharepoint upload)",
+            error=exc,
+            context="Celery run_post_validation_flow_task - sharepoint upload"
+        )
 
     return {
         "status": "ok",
@@ -281,6 +322,33 @@ def feedback_process_task():
                     "message": f"An error occurred: {str(exc)}",
                 }   
 
+
+@celery_app.task(name="app.tasks.run_sharepoint_upload_processed_data")
+def run_sharepoint_upload_processed_data():
+    """Run the SharePoint upload for processed data asynchronously."""
+    try:
+        logger.info("Starting SharePoint upload for processed data agent ...................................")
+        sharepoint_upload_processed_data()
+        logger.info("SharePoint upload for processed data agent completed successfully .............................")
+    except Exception as exc:
+        logger.error("SharePoint upload for processed data agent failed: %s", exc)
+        send_error_notification(
+            subject="[Billing AI System] Error in run_sharepoint_upload_processed_data",
+            error=exc,
+            context="Celery run_sharepoint_upload_processed_data agent"
+        )
+    try:
+        logger.info("Starting Cleanup Agent for output folders................................................")
+        cleanup_all_outputs.apply_async(countdown=180)  # Schedule to run after 3 minutes to ensure upload is completed and any file locks are released
+        logger.info("Cleanup Agent for task completed.......................................................")
+    except Exception as exc:
+        logger.error("Cleanup Agent for output folders failed: %s", exc)
+        send_error_notification(
+            subject="[Billing AI System] Error in Cleanup Agent for output folders",
+            error=exc,
+            context="Celery Cleanup Agent for output folders"
+        )        
+        return {"error": str(exc)}
 
 @celery_app.task(name="app.tasks.run_cleanup_task")
 def run_cleanup_task():

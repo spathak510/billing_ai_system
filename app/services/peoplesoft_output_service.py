@@ -78,21 +78,23 @@ def generate_amer_peoplesoft_output(
 
     df = _filter_amer_rows(df)
 
-    # Only generate output if there is at least one data row
     if df.empty:
         logger.info("No data found for AMER PeopleSoft output; skipping file generation.")
         return {}
 
-    # Ensure output directory exists under the current AMER folder structure.
+    # Output folder logic (ensure trailing slash, create if missing)
     output_dir = Path(settings.output_dir) / "AMER" / "AMER_Output"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     date_str = _date_suffix()
-    corp_csv_path = output_dir / f"CORP_BILLING_{date_str}.csv"
-    noncorp_csv_path = output_dir / f"NONCORP_BILLING_{date_str}.csv"
-    combined_csv_path = output_dir / f"NONCORP&CORP_BILLING_{date_str}.csv"
+    corp_file_name = f"CORP_BILLING_{date_str}.csv"
+    noncorp_file_name = f"NONCORP_BILLING_{date_str}.csv"
+    combined_file_name = f"NONCORP&CORP_BILLING_{date_str}.csv"
+    corp_csv_path = output_dir / corp_file_name
+    noncorp_csv_path = output_dir / noncorp_file_name
+    combined_csv_path = output_dir / combined_file_name
 
-    # Open CSV writers
+    # Open writers
     corp_writer = open(corp_csv_path, "w", encoding="utf-8")
     noncorp_writer = open(noncorp_csv_path, "w", encoding="utf-8")
     combined_writer = open(combined_csv_path, "w", encoding="utf-8")
@@ -102,90 +104,105 @@ def generate_amer_peoplesoft_output(
         noncorp_count = 0
         combined_count = 0
 
-        # Write headers
-        corp_writer.write("HDR|08|2019\n")
-        noncorp_writer.write("HDR|08|2019\n")
-        combined_writer.write("HDR|08|2019\n")
+        # Header: HDR|MM|YYYY
+        from datetime import datetime
+        now = datetime.now()
+        header = f"HDR|{now.strftime('%m')}|{now.strftime('%Y')}"
+        corp_writer.write(header + "\n")
+        noncorp_writer.write(header + "\n")
+        combined_writer.write(header + "\n")
 
         # Normalize column names (case-insensitive lookup)
         col_map = {col.upper(): col for col in df.columns}
-
         owner_id_col = col_map.get("OWNER_ID") or col_map.get("EMPLOYEE")
         id_col = col_map.get("ID") or col_map.get("ORDER_NO")
         holidex_col = col_map.get("HOLIDEX")
-        class_type_col = col_map.get("TRANSTYPECODE")
         amount_col = col_map.get("AMOUNT")
         user_type_col = col_map.get("USER_TYPE")
+        description_col = col_map.get("COURSE_NAME")
+        trans_date_col = col_map.get("PAY_DATE")
+        currency_col = col_map.get("CURRENCYCODE")
+        country_col = col_map.get("COUNTRY")
 
-        # Process rows
         for _, row in df.iterrows():
-            owner_id = ""
-            holidex = ""
-            class_type = ""
-            id_value = ""
-            amount = ""
-            user_type = ""
+            owner_id = str(row.get(owner_id_col, "")).strip() if owner_id_col else ""
+            id_value = str(row.get(id_col, "")).strip() if id_col else ""
+            holidex = str(row.get(holidex_col, "")).strip() if holidex_col else ""
+            amount = str(row.get(amount_col, "")).strip() if amount_col else ""
+            user_type = str(row.get(user_type_col, "")).strip().upper() if user_type_col else ""
+            description = str(row.get(description_col, "")).strip() if description_col else ""
+            trans_date = str(row.get(trans_date_col, "")).strip() if trans_date_col else ""
+            currency = str(row.get(currency_col, "")).strip() if currency_col else ""
+            country = str(row.get(country_col, "")).strip() if country_col else ""
 
-            # Extract OWNER_ID
-            if owner_id_col:
-                owner_id = str(row.get(owner_id_col, "")).strip()
+            # Defaults/fixes
+            if not currency:
+                currency = "USD"
 
-            # Extract ID
-            if id_col:
-                id_value = str(row.get(id_col, "")).strip()
+            # EUR → USD conversion
+            if currency.upper() == "EUR":
+                try:
+                    amt = float(amount)
+                    amount = f"{amt / 0.86:.2f}"
+                    currency = "USD"
+                except Exception:
+                    pass
 
             if not id_value.lower().startswith("intor"):
                 id_value = "intor00000000" + id_value
 
-            # Extract HOLIDEX
-            if holidex_col:
-                holidex = str(row.get(holidex_col, "")).strip()
-
-            # Extract CLASS TYPE
-            if class_type_col:
-                class_type = str(row.get(class_type_col, "")).strip()
-
-            # Extract AMOUNT
-            if amount_col:
-                amount = str(row.get(amount_col, "")).strip()
-
-            # Extract USER_TYPE
-            if user_type_col:
-                user_type = str(row.get(user_type_col, "")).strip().upper()
-
-            # Apply prefix logic based on class type
-            class_type_upper = class_type.upper()
-            if "VIRTUAL" in class_type_upper or "INSTRUCTOR" in class_type_upper:
-                owner_id = "ioreg00000000" + owner_id
-            elif "WEB" in class_type_upper:
-                owner_id = "iodwn00000000" + owner_id
-
-            # Truncate owner_id to max 20 chars
             if len(owner_id) > 20:
-                owner_id = owner_id.replace("0", "")
-                if len(owner_id) > 20:
-                    owner_id = owner_id[:20]
+                owner_id = owner_id[:20]
 
-            # Split by USER_TYPE
+            # Date format
+            from datetime import datetime
+            try:
+                if trans_date:
+                    dt = pd.to_datetime(trans_date, errors="coerce")
+                    if pd.notnull(dt):
+                        trans_date = dt.strftime("%m/%d/%Y")
+            except Exception:
+                pass
+
+            # CORPORATE (C)
             if user_type == "C":
-                # CORP: idValue|ownerId||amount
-                line = f"{id_value}|{owner_id}||{amount}\n"
-                corp_writer.write(line)
-                combined_writer.write(line)
+                line = (
+                    f"DTL|"
+                    f"{owner_id}|"
+                    f"{id_value}||"
+                    f"{trans_date}|"
+                    f"Training||83|"
+                    f"{currency}||"
+                    f"{amount}|"
+                    f"{description}"
+                )
+                corp_writer.write(line + "\n")
+                combined_writer.write(line + "\n")
                 corp_count += 1
                 combined_count += 1
 
-            elif user_type in {"F", "H"}:
-                # NON-CORP: idValue|ownerId|holidex|amount
-                # Only write if HOLIDEX length is exactly 5
-                if len(holidex) == 5:
-                    line = f"{id_value}|{owner_id}|{holidex}|{amount}\n"
-                    noncorp_writer.write(line)
-                    combined_writer.write(line)
-                    noncorp_count += 1
-                    combined_count += 1
+            # NON-CORPORATE (F/H)
+            elif user_type in ("F", "H"):
+                if len(holidex) != 5:
+                    continue
+                line = (
+                    f"DTL|"
+                    f"{owner_id}|"
+                    f"{id_value}||"
+                    f"{trans_date}|"
+                    f"Training|"
+                    f"{holidex}|83|"
+                    f"{currency}|"
+                    f"{country}|"
+                    f"{amount}|"
+                    f"{description}"
+                )
+                noncorp_writer.write(line + "\n")
+                combined_writer.write(line + "\n")
+                noncorp_count += 1
+                combined_count += 1
 
-        # Write trailers
+        # Trailer
         corp_writer.write(f"TRL|{corp_count:010d}\n")
         noncorp_writer.write(f"TRL|{noncorp_count:010d}\n")
         combined_writer.write(f"TRL|{combined_count:010d}\n")

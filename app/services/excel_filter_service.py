@@ -273,6 +273,7 @@ def _split_region_collections(cleaned_workbook: Workbook, source_stem: str) -> d
         ws.append(header)
         return wb, ws
     AMER_wb, AMER_ws = new_ws("AMER")
+    AMER_wb_input, AMER_ws_input = new_ws("AMER_INPUT")  # For AMER PeopleSoft input if needed
     APAC_wb, APAC_ws = new_ws("APAC")
     GC_wb, GC_ws = new_ws("GC")
     APAC_GC_wb, APAC_GC_ws = new_ws("APAC_GC")
@@ -282,11 +283,14 @@ def _split_region_collections(cleaned_workbook: Workbook, source_stem: str) -> d
     for row in rows[1:]:
         bu = str(row[col_idx.get("BU", -1)]).strip().upper() if col_idx.get("BU") is not None else ""
         region = str(row[col_idx.get("REGION", -1)]).strip().upper() if col_idx.get("REGION") is not None else ""
-        if bu.startswith("A"):
+        if bu.startswith("A") :
             AMER_ws.append(row)
+        elif bu.startswith("A") and (region == "GC" or region == "APAC" or region == "EMEAA" or region == "AMEA"):
+            AMER_ws_input.append(row)
         elif bu.startswith("P"):
-            APAC_GC_ws.append(row)
-            if region == "GC":
+            if region == "APAC" or region == "GC" or region == "AMEA":
+                APAC_GC_ws.append(row)
+            elif region == "GC":
                 GC_ws.append(row)
             elif region == "APAC" or region == "AMEA":
                 APAC_ws.append(row)
@@ -303,6 +307,7 @@ def _split_region_collections(cleaned_workbook: Workbook, source_stem: str) -> d
         output_paths[name] = str(path)
         logger.info("Created %s region file: %s", name, path)
     save_wb(AMER_wb, "AMER")
+    save_wb(AMER_wb_input, "AMER_INPUT")
     save_wb(APAC_wb, "APAC")
     save_wb(GC_wb, "GC")
     save_wb(APAC_GC_wb, "APAC_GC")
@@ -473,7 +478,7 @@ def remove_red_rows_from_excel(
         logger.warning("Failed AMER PeopleSoft generation for cleaned file %s: %s", output_path, exc)
 
     try:
-        amer_file = region_output_paths.get("AMER")
+        amer_file = region_output_paths.get("AMER_INPUT")
         if amer_file:
             generate_amer_intercompany_output(input_file_path=amer_file)
         else:
@@ -483,7 +488,13 @@ def remove_red_rows_from_excel(
 
     apac_processing_result: dict[str, str | int] | None = None
     try:
-        apac_processing_result = generate_apac_processing_output(input_file_path=str(output_path))
+        apac_gc_file = region_output_paths.get("APAC_GC")
+        if apac_gc_file:
+            apac_processing_result = generate_apac_processing_output(input_file_path=apac_gc_file)
+        else:
+            logger.warning("APAC GC not found into into region wise split folder path")    
+        # apac_processing_result = generate_apac_processing_output(input_file_path=str(output_path))
+        
     except Exception as exc:
         logger.warning("Failed APAC processing generation for cleaned file %s: %s", output_path, exc)
 
