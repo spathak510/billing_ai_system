@@ -18,6 +18,7 @@ from app.api.mail_processor import post_validation_send_email, send_text_email
 from app.agents.mail_reader_agent import MailReaderAgent
 from app.utils.error_notifier import send_error_notification
 from app.agents.SmartFeedbackAgent import SmartFeedbackAgent
+from app.services.business_follow_up_service import send_validation_reply_reminder
 
 logger = logging.getLogger(__name__)
 
@@ -339,15 +340,15 @@ def run_sharepoint_upload_processed_data():
         )
     try:
         logger.info("Starting Cleanup Agent for output folders................................................")
-        cleanup_all_outputs.apply_async(countdown=180)  # Schedule to run after 3 minutes to ensure upload is completed and any file locks are released
-        logger.info("Cleanup Agent for task completed.......................................................")
+        run_cleanup_task.apply_async(countdown=180)
+        logger.info("Cleanup Agent for task scheduled.......................................................")
     except Exception as exc:
         logger.error("Cleanup Agent for output folders failed: %s", exc)
         send_error_notification(
             subject="[Billing AI System] Error in Cleanup Agent for output folders",
             error=exc,
             context="Celery Cleanup Agent for output folders"
-        )        
+        )
         return {"error": str(exc)}
 
 @celery_app.task(name="app.tasks.run_cleanup_task")
@@ -356,6 +357,28 @@ def run_cleanup_task():
     cleanup_all_outputs()
     logger.info("Cleanup Agent for task completed.......................................................")
     return {"status": "cleanup completed"}
+
+
+@celery_app.task(name="app.tasks.run_validation_reply_follow_up_task")
+def run_validation_reply_follow_up_task():
+    subject = "Monthly Billing Records {} - Corp and Non-Corp Records for Validation".format(
+        datetime.now().strftime("%B%Y")
+    )
+    logger.info("Starting validation reply follow-up task for subject: %s", subject)
+
+    result = send_validation_reply_reminder(subject)
+
+    if result.get("status") == "error":
+        send_error_notification(
+            subject="[Billing AI System] Error in run_validation_reply_follow_up_task",
+            error=result.get("message", "Unknown follow-up task error"),
+            context=f"Celery run_validation_reply_follow_up_task - subject: {subject}",
+        )
+        logger.error("Validation reply follow-up task failed: %s", result)
+        return result
+
+    logger.info("Validation reply follow-up task completed: %s", result)
+    return result
 
 
 

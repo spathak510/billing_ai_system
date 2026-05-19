@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from celery import Celery
+from datetime import timedelta
 from kombu import Queue
 
 from app.config.settings import settings
@@ -27,6 +28,10 @@ def create_celery_app() -> Celery:
         "billing-post-validation-flow": {
             "task": "app.tasks.run_post_validation_flow_task",
             "schedule": 2 * 60,  # every 5 minutes
+        },
+        "billing-validation-reply-follow-up": {
+            "task": "app.tasks.run_validation_reply_follow_up_task",
+            "schedule": timedelta(hours=24),
         },
         # "billing-feedback-flow": {
         #     "task": "app.tasks.feedback_process_task",

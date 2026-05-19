@@ -15,7 +15,7 @@ from werkzeug.exceptions import HTTPException
 from app.config.settings import settings
 from app.agents.mail_reader_agent import MailReaderAgent
 from app.services.billing_service import process_billing_file
-from app.services.cleanup_service import cleanup_all_outputs, cleanup_specific_folder
+from app.services.cleanup_service import cleanup_all_outputs
 from app.services.peoplesoft_output_service import generate_amer_peoplesoft_output
 from app.services.sharepoint_download_service import SharePointDownloadClient
 from app.services.sharepoint_move_service import SharePointMoveClient
@@ -789,65 +789,6 @@ def register_api_routes(app: Flask) -> None:
         status_code = 200 if result.get("status") == "success" else 500
         return jsonify(result), status_code
 
-    @app.post("/api/v1/cleanup/folder")
-    def cleanup_folder_api():
-        """Remove all files from a specific output subfolder.
-
-        Preserves template files within the folder.
-
-        Request JSON body::
-
-            {
-                "folder_name": "AMER_Intercompny"  # required: subfolder in output/
-            }
-
-        Supported folder names:
-        - AMER_Intercompny
-        - APAC
-        - EMEAA
-        - Region_Wise_Split
-        - GAF_APAC_PROCESSER
-        - JRF
-        - Monthly_cleaned_report
-        - RIR_APAC
-
-        Response::
-
-            {
-                "status": "success",
-                "message": "Cleanup completed for folder 'AMER_Intercompny'",
-                "files_deleted": 15,
-                "size_freed_mb": 12.45,
-                "removed_paths": [
-                    "AMER_Intercompny/Output/AMER_Intercompany billing lines_April 2026.xlsx"
-                ]
-            }
-        """
-        data = request.get_json(force=True, silent=True) or {}
-        folder_name = data.get("folder_name")
-
-        if not folder_name or not isinstance(folder_name, str):
-            return (
-                jsonify(
-                    {
-                        "error": "'folder_name' is required and must be a string.",
-                        "status": "error",
-                    }
-                ),
-                400,
-            )
-
-        try:
-            result = cleanup_specific_folder(folder_name.strip())
-        except Exception as exc:
-            logger.error(
-                "cleanup_folder_api failed for folder '%s': %s", folder_name, exc
-            )
-            return jsonify({"error": str(exc), "status": "error"}), 500
-
-        status_code = 200 if result.get("status") == "success" else 500
-        return jsonify(result), status_code
-
     @app.post("/api/v1/test_api")
     def vm_test_api():
         """Only for test use"""
@@ -856,13 +797,18 @@ def register_api_routes(app: Flask) -> None:
         # from app.services.excel_append_service import ExcelAppendService
         # obj = ExcelAppendService()
         # obj.new_history_data_preparation()
-        from app.api.sharepoint_processor import sharepoint_upload_processed_data
-        sharepoint_upload_processed_data()
-        return (
-            jsonify(
-                {
-                    "status": "Ok",
-                }
-            ),
-            200,
+        # from app.api.sharepoint_processor import sharepoint_upload_processed_data
+        # sharepoint_upload_processed_data()
+        from app.services.business_follow_up_service import send_validation_reply_reminder
+
+        result = send_validation_reply_reminder(
+            "Monthly Billing Records May2026 - Corp and Non-Corp Records for Validation"
         )
+        logger.info("Follow-up test result: %s", result)
+        status = str(result.get("status", "")).lower()
+        status_code = 200
+        if status == "error":
+            status_code = 500
+        elif status == "not_found":
+            status_code = 404
+        return jsonify(result), status_code

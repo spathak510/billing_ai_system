@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import re
+import re, os
 import time
 import pandas as pd
 from openai import OpenAI
@@ -32,7 +32,6 @@ class SmartFeedbackAgent:
         self.source_folders_noncorp = Path("feedback/NonCrop/")
         self.output_folder = Path("feedback/feedback_data")
 
-        import os
         os.makedirs(self.output_folder, exist_ok=True)
         
     # Email Classification (Concern / Feedback / Neutral)
